@@ -20,6 +20,14 @@ jobs:
           with urllib.request.urlopen(req,timeout=10) as r:
               data=json.load(r)
               assert data['hostname'] and data['cpu_cores']>0
+          def api(path,body=None):
+              raw=json.dumps(body).encode() if body is not None else None
+              req=urllib.request.Request('http://127.0.0.1:9091/api/v1/'+path,data=raw,headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'})
+              with urllib.request.urlopen(req,timeout=10) as r:return json.load(r)
+          assert api('disks')['disks']
+          assert 'ports' in api('ports')
+          assert 'timers' in api('timers')
+          assert api('disk-scan',{'path':'/var/log'})['metric']=='logical_bytes'
           print('Published installer -> release download -> SHA256 -> systemd -> authenticated API: PASS')
           PY
       - name: Clean test service
@@ -27,5 +35,5 @@ jobs:
         run: |
           sudo systemctl disable --now litehelm.service || true
           sudo rm -f /usr/local/bin/litehelm /etc/systemd/system/litehelm.service
-          sudo rm -rf /etc/litehelm
+          sudo rm -rf /etc/litehelm /etc/systemd/system/litehelm.service.d
           sudo systemctl daemon-reload
