@@ -2,7 +2,7 @@
 # CI-only: a disposable systemd Linux runner, root privileges required.
 set -eu
 [ "${LITEHELM_TEST_DISPOSABLE:-}" = 1 ] || { echo 'Set LITEHELM_TEST_DISPOSABLE=1 only on a disposable runner'; exit 1; }
-base=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+base=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 [ ! -e /etc/systemd/system/litehelm.service ] || { echo 'Refusing existing installation'; exit 1; }
 tmp=$(mktemp -d)
 cleanup() {

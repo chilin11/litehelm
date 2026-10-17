@@ -1,6 +1,6 @@
 #!/bin/sh
 set -eu
-base=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+base=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$base/server"
 mkdir -p "$base/dist"
 for arch in amd64 arm64 arm; do
