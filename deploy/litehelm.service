@@ -1,0 +1,29 @@
+[Unit]
+Description=LiteHelm lightweight mobile server manager
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/litehelm -listen 127.0.0.1:9091 -token-file /etc/litehelm/token
+Environment=LITEHELM_UNIT=litehelm.service
+Environment=GOMEMLIMIT=32MiB
+Environment=GOGC=75
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=CAP_KILL CAP_DAC_READ_SEARCH CAP_SYS_PTRACE
+
+[Install]
+WantedBy=multi-user.target

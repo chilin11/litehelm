@@ -1,0 +1,54 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Test and build
+        run: |
+          sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+          (cd server && go test -race ./... && go vet ./...)
+          sh scripts/build-server.sh
+          python3 scripts/checksums.py
+          shellcheck install.sh deploy/install.sh scripts/build-server.sh scripts/test-install.sh
+          sudo env LITEHELM_TEST_DISPOSABLE=1 sh scripts/test-install.sh
+          android/gradlew -p android assembleDebug assembleRelease lintDebug --console plain
+      - name: Prepare APK
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/release.keystore"
+            "$ANDROID_HOME/build-tools/35.0.0/zipalign" -p -f 4 android/app/build/outputs/apk/release/app-release-unsigned.apk "$RUNNER_TEMP/aligned.apk"
+            "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign --ks "$RUNNER_TEMP/release.keystore" --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEY_PASSWORD --ks-key-alias "$KEY_ALIAS" --out dist/LiteHelm-release.apk "$RUNNER_TEMP/aligned.apk"
+            rm -f "$RUNNER_TEMP/release.keystore"
+          else
+            cp android/app/build/outputs/apk/debug/app-debug.apk dist/LiteHelm-debug.apk
+          fi
+          for apk in dist/*.apk; do "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify "$apk"; done
+          cp LICENSE THIRD_PARTY_NOTICES.md dist/
+          cp install.sh dist/install.sh
+          python3 scripts/checksums.py
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" dist/litehelm-linux-* dist/*.apk dist/install.sh dist/SHA256SUMS dist/LICENSE dist/THIRD_PARTY_NOTICES.md --verify-tag --title "LiteHelm $RELEASE_TAG" --notes-file .github/RELEASE_NOTES.md
