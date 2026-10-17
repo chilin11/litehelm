@@ -21,7 +21,8 @@ PrivateDevices=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-RestrictSUIDSGID=true
+# Older systemd blocks openat2 under RestrictSUIDSGID=true.
+RestrictSUIDSGID=false
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 CapabilityBoundingSet=CAP_KILL CAP_DAC_READ_SEARCH CAP_SYS_PTRACE
 

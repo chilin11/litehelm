@@ -15,12 +15,18 @@ cleanup() {
 trap cleanup EXIT
 sh "$base/install.sh" --local-dir "$base/dist"
 systemd-analyze verify /etc/systemd/system/litehelm.service
+# Exercise upgrade from the previous unit without rewriting it.
+sed -i 's/RestrictSUIDSGID=false/RestrictSUIDSGID=true/' /etc/systemd/system/litehelm.service
+rm -f /etc/systemd/system/litehelm.service.d/10-litehelm-openat2.conf
+systemctl daemon-reload
+systemctl restart litehelm.service
 token_hash=$(sha256sum /etc/litehelm/token)
 binary_hash=$(sha256sum /usr/local/bin/litehelm)
 unit_hash=$(sha256sum /etc/systemd/system/litehelm.service)
 sh "$base/install.sh" --local-dir "$base/dist"
 [ "$token_hash" = "$(sha256sum /etc/litehelm/token)" ]
 [ "$unit_hash" = "$(sha256sum /etc/systemd/system/litehelm.service)" ]
+grep -q 'RestrictSUIDSGID=false' /etc/systemd/system/litehelm.service.d/10-litehelm-openat2.conf
 cat > /etc/systemd/system/fixture-worker.service <<'UNIT'
 [Unit]
 Description=LiteHelm disposable integration fixture

@@ -101,7 +101,7 @@ PrivateDevices=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-RestrictSUIDSGID=true
+RestrictSUIDSGID=false
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 CapabilityBoundingSet=CAP_KILL CAP_DAC_READ_SEARCH CAP_SYS_PTRACE
 
@@ -109,11 +109,22 @@ CapabilityBoundingSet=CAP_KILL CAP_DAC_READ_SEARCH CAP_SYS_PTRACE
 WantedBy=multi-user.target
 UNIT
 fi
+# Older systemd blocks openat2 when RestrictSUIDSGID is enabled.
+# Keep existing units and user drop-ins; add one named compatibility setting.
+compat=/etc/systemd/system/litehelm.service.d/10-litehelm-openat2.conf
+added_compat=false
+if [ ! -e "$compat" ]; then
+ install -d -m 755 /etc/systemd/system/litehelm.service.d
+ printf '%s\n' '[Service]' '# Safe read-only scans require openat2.' 'RestrictSUIDSGID=false' > "$compat"
+ chmod 644 "$compat"
+ added_compat=true
+fi
 rollback() {
  echo 'Startup failed; restoring previous binary and service state' >&2
  systemctl stop litehelm.service || true
  if [ "$had_binary" = true ]; then install -m 755 "$tmp/previous" /usr/local/bin/litehelm.new; mv -f /usr/local/bin/litehelm.new /usr/local/bin/litehelm; else rm -f /usr/local/bin/litehelm; fi
  if [ "$had_unit" = false ]; then rm -f /etc/systemd/system/litehelm.service; fi
+ if [ "$added_compat" = true ]; then rm -f "$compat"; fi
  systemctl daemon-reload || true
  if [ "$was_active" = true ]; then systemctl start litehelm.service || true; fi
  echo 'Token has been preserved. Inspect: journalctl -u litehelm -n 40 --no-pager' >&2
@@ -125,4 +136,4 @@ systemctl restart litehelm.service || rollback
 sleep 2
 systemctl is-active --quiet litehelm.service || rollback
 systemctl enable litehelm.service
-printf '%s\n' 'LiteHelm is running at http://127.0.0.1:9091' 'Publish this local endpoint using your HTTPS reverse proxy.' 'Read the token locally: sudo cat /etc/litehelm/token' 'Existing token, unit and drop-in settings were preserved.'
+printf '%s\n' 'LiteHelm is running at http://127.0.0.1:9091' 'Publish this local endpoint using your HTTPS reverse proxy.' 'Read the token locally: sudo cat /etc/litehelm/token' 'Existing token, unit and user drop-ins were preserved; managed openat2 compatibility setting installed.'

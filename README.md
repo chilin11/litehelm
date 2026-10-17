@@ -105,6 +105,7 @@ Environment="LITEHELM_SCAN_ROOTS=/var/log,/var/cache"
 
 扫描显示逻辑文件大小，不是实际分配量或可清理空间；硬链接按路径重复计数。遇到条数、深度、权限或时间限制显示部分结果。时间预算在文件系统调用之间检查，磁盘 I/O 卡顿可能超过预算；不会后台扫描或自动删除文件。
 安全目录扫描要求 Linux 5.6+ 的 `openat2` 支持；不可用时明确拒绝扫描。子挂载（包括同设备 bind mount）在读取属性前跳过，其他功能不受此扫描要求影响。
+安装器添加 `10-litehelm-openat2.conf`，设置 `RestrictSUIDSGID=false`：部分 systemd 版本在该项开启时屏蔽 openat2。原 unit 和用户 drop-in 保留；只读系统、NoNewPrivileges 与 capabilities 限制继续启用。若后续自定义配置再次屏蔽 openat2，扫描会拒绝执行。
 
 
 ## 从源码构建
