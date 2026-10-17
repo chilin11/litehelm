@@ -28,7 +28,7 @@
 
 ## 发布检查
 
-- 源码已公开到 https://github.com/chilin11/litehelm；安装器支持 Release 自动下载、版本固定、SHA256 与离线目录。在线下载至启动的检查结果以 GitHub 的 Online install smoke 工作流为准。
+- 源码与 v0.1.0 已发布到 https://github.com/chilin11/litehelm。Release 附件下载后的 SHA256、APK 签名与品牌扫描通过；Online install smoke 在 Ubuntu 临时 runner 完整验证公开脚本下载、Release 程序下载、校验、systemd 启动及认证 API，结果通过。
 - 构建产物、SDK 路径和签名文件不进入源码仓库。首版 APK 为开发测试签名，长期分发需配置稳定的发布密钥。
 
 ## 部署尚需的信息
