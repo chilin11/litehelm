@@ -43,7 +43,7 @@ trap 'exit 1' HUP INT TERM
 tmp=$(mktemp -d /tmp/litehelm-install.XXXXXX)
 asset=litehelm-linux-$arch
 if [ -n "$LOCAL_DIR" ]; then
- [ -f "$LOCAL_DIR/$asset" ] && [ -f "$LOCAL_DIR/SHA256SUMS" ] || { echo 'Local directory must contain binary and SHA256SUMS' >&2; exit 1; }
+ if [ ! -f "$LOCAL_DIR/$asset" ] || [ ! -f "$LOCAL_DIR/SHA256SUMS" ]; then echo 'Local directory must contain binary and SHA256SUMS' >&2; exit 1; fi
  cp "$LOCAL_DIR/$asset" "$tmp/$asset"
  cp "$LOCAL_DIR/SHA256SUMS" "$tmp/SHA256SUMS"
 else
@@ -66,7 +66,7 @@ if [ ! -e /etc/litehelm/token ]; then
  "$tmp/$asset" -generate-token > "$tmp/token"
  install -m 600 "$tmp/token" /etc/litehelm/token
 fi
-[ -f /etc/litehelm/token ] && [ ! -L /etc/litehelm/token ] || { echo 'Token must be a regular non-symlink file' >&2; exit 1; }
+if [ ! -f /etc/litehelm/token ] || [ -L /etc/litehelm/token ]; then echo 'Token must be a regular non-symlink file' >&2; exit 1; fi
 chmod 600 /etc/litehelm/token
 had_binary=false
 had_unit=false
