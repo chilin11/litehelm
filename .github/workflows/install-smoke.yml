@@ -1,0 +1,31 @@
+name: Online install smoke
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install from published script and release
+        run: |
+          curl --fail --location --silent --show-error https://raw.githubusercontent.com/chilin11/litehelm/main/install.sh -o "$RUNNER_TEMP/litehelm-install.sh"
+          sudo sh "$RUNNER_TEMP/litehelm-install.sh"
+          sudo systemctl is-active --quiet litehelm
+          sudo python3 - <<'PY'
+          from pathlib import Path
+          import json, urllib.request
+          token=Path('/etc/litehelm/token').read_text().strip()
+          req=urllib.request.Request('http://127.0.0.1:9091/api/v1/system',headers={'Authorization':'Bearer '+token})
+          with urllib.request.urlopen(req,timeout=10) as r:
+              data=json.load(r)
+              assert data['hostname'] and data['cpu_cores']>0
+          print('Published installer -> release download -> SHA256 -> systemd -> authenticated API: PASS')
+          PY
+      - name: Clean test service
+        if: always()
+        run: |
+          sudo systemctl disable --now litehelm.service || true
+          sudo rm -f /usr/local/bin/litehelm /etc/systemd/system/litehelm.service
+          sudo rm -rf /etc/litehelm
+          sudo systemctl daemon-reload
