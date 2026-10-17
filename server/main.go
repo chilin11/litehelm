@@ -37,6 +37,8 @@ type app struct {
 	slots    chan struct{}
 	mutation sync.Mutex
 	unit     string
+	scanMu   sync.Mutex
+	lastScan time.Time
 }
 
 func main() {
@@ -143,6 +145,16 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.services(w, r)
 	case strings.HasPrefix(p, "/api/v1/services/"):
 		a.service(w, r)
+	case p == "/api/v1/ports" && r.Method == "GET":
+		a.ports(w, r)
+	case p == "/api/v1/timers" && r.Method == "GET":
+		a.timers(w, r)
+	case strings.HasPrefix(p, "/api/v1/timers/") && strings.HasSuffix(p, "/run") && r.Method == "POST":
+		a.runTimer(w, r)
+	case p == "/api/v1/disks" && r.Method == "GET":
+		a.disks(w, r)
+	case p == "/api/v1/disk-scan" && r.Method == "POST":
+		a.diskScan(w, r)
 	case p == "/api/v1/power" && r.Method == "POST":
 		a.powerAction(w, r)
 	default:

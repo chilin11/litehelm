@@ -7,9 +7,9 @@ base=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 tmp=$(mktemp -d)
 cleanup() {
  systemctl disable --now litehelm.service >/dev/null 2>&1 || true
- systemctl stop fixture-worker.service >/dev/null 2>&1 || true
- rm -f /etc/systemd/system/litehelm.service /etc/systemd/system/fixture-worker.service /usr/local/bin/litehelm
- rm -rf /etc/litehelm "$tmp"
+ systemctl stop fixture-worker.timer fixture-worker.service >/dev/null 2>&1 || true
+ rm -f /etc/systemd/system/litehelm.service /etc/systemd/system/fixture-worker.service /etc/systemd/system/fixture-worker.timer /usr/local/bin/litehelm
+ rm -rf /etc/litehelm /etc/systemd/system/litehelm.service.d "$tmp"
  systemctl daemon-reload
 }
 trap cleanup EXIT
@@ -27,7 +27,22 @@ Description=LiteHelm disposable integration fixture
 [Service]
 ExecStart=/usr/bin/sleep 300
 UNIT
+cat > /etc/systemd/system/fixture-worker.timer <<'UNIT'
+[Unit]
+Description=LiteHelm disposable timer
+[Timer]
+OnActiveSec=1h
+Unit=fixture-worker.service
+UNIT
+mkdir -p /etc/systemd/system/litehelm.service.d
+cat > /etc/systemd/system/litehelm.service.d/tools.conf <<'CONF'
+[Service]
+Environment=LITEHELM_RUN_TIMERS=fixture-worker.timer
+Environment=LITEHELM_SCAN_ROOTS=/var/log
+CONF
 systemctl daemon-reload
+systemctl restart litehelm.service
+systemctl start fixture-worker.timer
 python3 - <<'PY'
 import json, urllib.request, urllib.error
 from pathlib import Path
@@ -48,6 +63,22 @@ try:
  raise AssertionError('Allowed stop of management service')
 except urllib.error.HTTPError as e:
  assert e.code==403
+ports=request('ports')
+assert ports['supported'] and any(':9091' in p['address'] for p in ports['ports'])
+disks=request('disks')
+assert disks['disks'] and all('inodes_total' in d for d in disks['disks'])
+timers=request('timers')
+timer=next(t for t in timers['timers'] if t['name']=='fixture-worker.timer')
+assert timer['can_run'] and timer['unit']=='fixture-worker.service'
+assert request('timers/fixture-worker.timer/run', {'confirm':'fixture-worker.timer'})['ok']
+scan=request('disk-scan', {'path':'/var/log'})
+assert scan['metric']=='logical_bytes' and scan['elapsed_ms']<5000 and len(scan['entries'])<=20
+try:
+ request('disk-scan', {'path':'/var/log'})
+ raise AssertionError('Missing scan cooldown')
+except urllib.error.HTTPError as e:
+ assert e.code==429
+print('Tools ports/disks/timer whitelist/manual scan/cooldown: PASS')
 PY
 cp "$base/dist/litehelm-linux-amd64" "$tmp/litehelm-linux-amd64"
 printf '%064d  litehelm-linux-amd64\n' 0 > "$tmp/SHA256SUMS"
