@@ -78,6 +78,24 @@ try:
  raise AssertionError('Missing scan cooldown')
 except urllib.error.HTTPError as e:
  assert e.code==429
+import subprocess
+subprocess.run(['systemctl','stop','fixture-worker.timer','fixture-worker.service'],check=True)
+timerfile=Path('/etc/systemd/system/fixture-worker.timer')
+timerfile.write_text('[Timer]\nOnActiveSec=1h\nUnit=litehelm.service\n')
+subprocess.run(['systemctl','daemon-reload'],check=True)
+try:
+ request('timers/fixture-worker.timer/run', {'confirm':'fixture-worker.timer'})
+ raise AssertionError('Allowed protected target through timer')
+except urllib.error.HTTPError as e:
+ assert e.code==403
+timerfile.unlink()
+subprocess.run(['systemctl','daemon-reload'],check=True)
+try:
+ request('timers/fixture-worker.timer/run', {'confirm':'fixture-worker.timer'})
+ raise AssertionError('Guessed service target for deleted timer')
+except urllib.error.HTTPError as e:
+ assert e.code in (403,500)
+assert subprocess.run(['systemctl','is-active','--quiet','fixture-worker.service']).returncode!=0
 print('Tools ports/disks/timer whitelist/manual scan/cooldown: PASS')
 PY
 cp "$base/dist/litehelm-linux-amd64" "$tmp/litehelm-linux-amd64"

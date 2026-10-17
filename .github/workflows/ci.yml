@@ -41,6 +41,8 @@ jobs:
         with:
           packages: platform-tools
       - run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Test request lifecycle and log filtering
+        run: sh scripts/test-android-policy.sh
       - name: Build and lint
         run: android/gradlew -p android assembleDebug lintDebug --console plain
       - uses: actions/upload-artifact@v4

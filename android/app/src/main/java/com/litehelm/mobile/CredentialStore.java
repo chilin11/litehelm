@@ -24,17 +24,20 @@ final class CredentialStore {
         }
         return (SecretKey)store.getKey(ALIAS,null);
     }
-    ApiClient.Config load() throws Exception {
+    ProfileBook load() throws Exception {
         String value=context.getSharedPreferences("vault",Context.MODE_PRIVATE).getString("encrypted",null);
         if(value==null) return null;
         JSONObject envelope=new JSONObject(value);
         Cipher c=Cipher.getInstance("AES/GCM/NoPadding");
         c.init(Cipher.DECRYPT_MODE,key(),new GCMParameterSpec(128,Base64.decode(envelope.getString("iv"),Base64.NO_WRAP)));
-        return ApiClient.Config.parse(new JSONObject(new String(c.doFinal(Base64.decode(envelope.getString("data"),Base64.NO_WRAP)),java.nio.charset.StandardCharsets.UTF_8)));
+        JSONObject document=new JSONObject(new String(c.doFinal(Base64.decode(envelope.getString("data"),Base64.NO_WRAP)),java.nio.charset.StandardCharsets.UTF_8));
+        ProfileBook book=ProfileBook.parse(document);
+        if(!document.has("profiles"))save(book); // Atomic replacement; legacy ciphertext survives a failed commit.
+        return book;
     }
-    void save(ApiClient.Config config) throws Exception {
+    void save(ProfileBook book) throws Exception {
         Cipher c=Cipher.getInstance("AES/GCM/NoPadding"); c.init(Cipher.ENCRYPT_MODE,key());
-        byte[] data=c.doFinal(config.json().toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        byte[] data=c.doFinal(book.json().toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
         JSONObject envelope=new JSONObject().put("iv",Base64.encodeToString(c.getIV(),Base64.NO_WRAP)).put("data",Base64.encodeToString(data,Base64.NO_WRAP));
         if(!context.getSharedPreferences("vault",Context.MODE_PRIVATE).edit().putString("encrypted",envelope.toString()).commit()) throw new Exception("无法保存加密凭据，请检查设备存储");
     }

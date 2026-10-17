@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -85,7 +86,6 @@ func (a *app) disks(w http.ResponseWriter, r *http.Request) {
 		if seen[mount] {
 			continue
 		}
-		seen[mount] = true
 		if len(rows) >= 64 {
 			tr = true
 			break
@@ -95,10 +95,21 @@ func (a *app) disks(w http.ResponseWriter, r *http.Request) {
 			return
 		default:
 		}
-		var s unix.Statfs_t
-		if unix.Statfs(mount, &s) != nil {
+		fd, err := unix.Open(mount, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err != nil {
 			continue
 		}
+		id, idErr := mountID(fd)
+		var s unix.Statfs_t
+		statErr := error(nil)
+		if idErr == nil && id == left[0] {
+			statErr = unix.Fstatfs(fd, &s)
+		}
+		unix.Close(fd)
+		if idErr != nil || id != left[0] || statErr != nil || !localScanType(uint64(s.Type)) {
+			continue
+		}
+		seen[mount] = true
 		usedInodes := uint64(0)
 		if s.Files >= s.Ffree {
 			usedInodes = s.Files - s.Ffree
@@ -106,6 +117,19 @@ func (a *app) disks(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, diskInfo{mount, unescapeMount(right[1]), right[0], s.Blocks * uint64(s.Bsize), (s.Blocks - s.Bfree) * uint64(s.Bsize), s.Bavail * uint64(s.Bsize), s.Files, usedInodes})
 	}
 	output(w, 200, map[string]any{"disks": rows, "scan_roots": scanRoots(), "truncated": tr})
+}
+
+func mountID(fd int) (string, error) {
+	data, err := os.ReadFile("/proc/self/fdinfo/" + strconv.Itoa(fd))
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if key, value, ok := strings.Cut(line, ":"); ok && key == "mnt_id" {
+			return strings.TrimSpace(value), nil
+		}
+	}
+	return "", fmt.Errorf("mount identity unavailable")
 }
 
 type scanEntry struct {
@@ -158,13 +182,19 @@ func (b *scanBudget) check() bool {
 // fd-based traversal: never follow symlinks, even during rename races.
 func (b *scanBudget) entry(fd int, name string, depth int) (scanEntry, bool) {
 	row := scanEntry{Name: name}
-	var st unix.Stat_t
-	if unix.Fstatat(fd, name, &st, unix.AT_SYMLINK_NOFOLLOW) != nil {
-		b.partial("permission or changed entry")
+	entryFD, err := unix.Openat2(fd, name, &unix.OpenHow{Flags: unix.O_PATH | unix.O_NOFOLLOW | unix.O_CLOEXEC, Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_XDEV})
+	if err != nil {
+		if err == unix.EXDEV {
+			b.partial("filesystem boundary")
+		} else {
+			b.partial("permission or changed entry")
+		}
 		return row, false
 	}
-	if uint64(st.Dev) != b.dev {
-		b.partial("filesystem boundary")
+	defer unix.Close(entryFD)
+	var st unix.Stat_t
+	if unix.Fstat(entryFD, &st) != nil || uint64(st.Dev) != b.dev {
+		b.partial("permission or changed entry")
 		return row, false
 	}
 	switch st.Mode & unix.S_IFMT {
@@ -178,7 +208,7 @@ func (b *scanBudget) entry(fd int, name string, depth int) (scanEntry, bool) {
 			b.partial("depth limit")
 			return row, false
 		}
-		child, err := unix.Openat(fd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+		child, err := unix.Openat(entryFD, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
 		if err != nil {
 			b.partial("permission or changed entry")
 			return row, false
@@ -276,6 +306,11 @@ func scanDirectory(ctx context.Context, path string, limit int, depth int, durat
 	if !localScanType(uint64(fs.Type)) {
 		return result, fmt.Errorf("remote or virtual filesystem cannot be scanned")
 	}
+	probe, probeErr := unix.Openat2(fd, ".", &unix.OpenHow{Flags: unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC, Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_XDEV})
+	if probeErr != nil {
+		return result, fmt.Errorf("safe scan requires openat2 support (Linux 5.6+): %w", probeErr)
+	}
+	unix.Close(probe)
 	budget := &scanBudget{ctx: ctx, deadline: started.Add(duration), maxEntries: limit, maxDepth: depth, reasons: map[string]bool{}, dev: uint64(st.Dev)}
 	for budget.check() {
 		entries, err := dir.ReadDir(64)

@@ -113,14 +113,11 @@ func parseTimers(raw string, a *app) []timerInfo {
 			continue
 		}
 		unit := props["Unit"]
-		if unit == "" {
-			unit = strings.TrimSuffix(name, ".timer") + ".service"
-		}
 		next := props["NextElapseUSecRealtime"]
 		if next == "" || next == "0" {
 			next = "n/a"
 		}
-		rows = append(rows, timerInfo{name, props["Description"], props["ActiveState"], props["SubState"], next, props["LastTriggerUSec"], unit, timerAllowed(name) && unitPattern.MatchString(unit) && !a.protectedUnit(unit) && os.Geteuid() == 0})
+		rows = append(rows, timerInfo{name, props["Description"], props["ActiveState"], props["SubState"], next, props["LastTriggerUSec"], unit, props["LoadState"] == "loaded" && timerAllowed(name) && unitPattern.MatchString(unit) && !a.protectedUnit(unit) && os.Geteuid() == 0})
 	}
 	return rows
 }
@@ -129,7 +126,7 @@ func (a *app) timers(w http.ResponseWriter, r *http.Request) {
 		output(w, 200, map[string]any{"supported": false, "timers": []timerInfo{}, "truncated": false})
 		return
 	}
-	raw, tr, e := commandLimit(r.Context(), 512<<10, "systemctl", "show", "--all", "--no-pager", "--property=Id,Description,ActiveState,SubState,NextElapseUSecRealtime,LastTriggerUSec,Unit", "--", "*.timer")
+	raw, tr, e := commandLimit(r.Context(), 512<<10, "systemctl", "show", "--all", "--no-pager", "--property=Id,LoadState,Description,ActiveState,SubState,NextElapseUSecRealtime,LastTriggerUSec,Unit", "--", "*.timer")
 	if e != nil {
 		fail(w, 500, e.Error())
 		return
@@ -161,7 +158,7 @@ func (a *app) runTimer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Resolve again immediately before starting; client never supplies a service to execute.
-	raw, tr, e := command(r.Context(), "systemctl", "show", "--property=Id,Description,ActiveState,SubState,Unit", "--", name)
+	raw, tr, e := command(r.Context(), "systemctl", "show", "--property=Id,LoadState,Description,ActiveState,SubState,Unit", "--", name)
 	if e != nil || tr {
 		fail(w, 500, "Cannot resolve timer target")
 		return

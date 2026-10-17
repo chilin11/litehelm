@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"golang.org/x/sys/unix"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,9 +28,22 @@ not a socket`
 }
 func TestTimerParserWhitelist(t *testing.T) {
 	t.Setenv("LITEHELM_RUN_TIMERS", "backup.timer, system.timer")
-	rows := parseTimers("Id=backup.timer\nUnit=backup.service\nDescription=Backup\nActiveState=active\nSubState=waiting\nNextElapseUSecRealtime=Sat 2026-10-17 12:00:00 UTC\n\nId=system.timer\nUnit=sshd.service\n", testApp())
+	rows := parseTimers("Id=backup.timer\nLoadState=loaded\nUnit=backup.service\nDescription=Backup\nActiveState=active\nSubState=waiting\nNextElapseUSecRealtime=Sat 2026-10-17 12:00:00 UTC\n\nId=system.timer\nLoadState=loaded\nUnit=sshd.service\n", testApp())
 	if len(rows) != 2 || rows[0].Unit != "backup.service" || rows[1].CanRun || !timerAllowed("backup.timer") || timerAllowed("backup.timer;reboot") {
 		t.Fatal(rows)
+	}
+	if rows[0].CanRun != (os.Geteuid() == 0) {
+		t.Fatal("loaded allowed target rejected", rows)
+	}
+	for _, state := range []string{"not-found", "masked", "error", ""} {
+		bad := parseTimers("Id=backup.timer\nLoadState="+state+"\nUnit=backup.service\n", testApp())
+		if len(bad) != 1 || bad[0].CanRun {
+			t.Fatal("invalid timer accepted", bad)
+		}
+	}
+	missing := parseTimers("Id=backup.timer\nLoadState=loaded\n", testApp())
+	if len(missing) != 1 || missing[0].CanRun || missing[0].Unit != "" {
+		t.Fatal("guessed timer target", missing)
 	}
 	w := request(testApp(), "POST", "/api/v1/timers/bad;run.timer/run", `{"confirm":"bad;run.timer"}`, testToken)
 	if w.Code != 400 {
@@ -136,5 +150,25 @@ func TestScanAPIWhitelistAndCooldown(t *testing.T) {
 		if localFS(fs) {
 			t.Fatal(fs)
 		}
+	}
+}
+
+func TestScanRejectsChildMountBeforeStat(t *testing.T) {
+	fd, err := unix.Open("/", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	id, err := mountID(fd)
+	if err != nil || id == "" {
+		t.Fatal(id, err)
+	}
+	var st unix.Stat_t
+	if err = unix.Fstat(fd, &st); err != nil {
+		t.Fatal(err)
+	}
+	b := &scanBudget{ctx: context.Background(), deadline: time.Now().Add(time.Second), maxEntries: 100, maxDepth: 6, reasons: map[string]bool{}, dev: uint64(st.Dev)}
+	if _, ok := b.entry(fd, "proc", 0); ok || !b.reasons["filesystem boundary"] {
+		t.Fatal("crossed child mount", b.reasons)
 	}
 }

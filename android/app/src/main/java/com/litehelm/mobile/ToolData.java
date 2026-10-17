@@ -1,0 +1,28 @@
+package com.litehelm.mobile;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+/** Validate capability envelopes before presenting any action. */
+final class ToolData {
+    static void validate(String path,JSONObject data) throws Exception {
+        if(path.equals("/api/v1/disk-scan")) {
+            data.getString("path");data.getLong("bytes");data.getLong("files");data.getJSONArray("entries");data.getBoolean("partial");data.getString("reason");data.getLong("elapsed_ms");
+            if(!"logical_bytes".equals(data.getString("metric")))throw new Exception("扫描计量格式不受支持");
+        }else if(path.equals("/api/v1/disks")) {
+            data.getJSONArray("disks");data.getJSONArray("scan_roots");data.getBoolean("truncated");
+        }else {
+            boolean supported=data.getBoolean("supported");JSONArray entries=data.getJSONArray(path.endsWith("ports")?"ports":"timers");
+            if(supported)data.getBoolean("truncated");
+            if(path.endsWith("timers"))for(int i=0;i<entries.length();i++) {
+                JSONObject timer=entries.getJSONObject(i);timer.getString("name");timer.getString("unit");timer.getBoolean("can_run");
+            }
+        }
+    }
+    static String available(String value){return value.isEmpty()?"不可用":value;}
+    static String searchText(String kind,JSONObject item){
+        if(kind.equals("ports"))return item.optString("address")+" "+item.optString("process")+" "+item.optString("service")+" "+item.optString("pid");
+        if(kind.equals("timers"))return item.optString("name")+" "+item.optString("description")+" "+item.optString("unit");
+        return item.optString("mountpoint")+" "+item.optString("device")+" "+item.optString("filesystem");
+    }
+}

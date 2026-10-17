@@ -13,6 +13,10 @@ final class ApiClient {
     static final java.util.concurrent.atomic.AtomicBoolean MUTATING = new java.util.concurrent.atomic.AtomicBoolean();
     private volatile HttpURLConnection active;
     private volatile boolean activeWrite;
+    interface Connections { HttpURLConnection open(URL url) throws IOException; }
+    private final Connections connections;
+    ApiClient(){this(url->(HttpURLConnection)url.openConnection());}
+    ApiClient(Connections connections){this.connections=connections;}
     static final class Config {
         final String origin, token;
         Config(String origin, String token) {
@@ -34,14 +38,17 @@ final class ApiClient {
     }
     private static boolean hasControl(String s) { for(int i=0;i<s.length();i++) if(s.charAt(i)<32 || s.charAt(i)==127) return true; return false; }
     void cancelRead() { HttpURLConnection c=active; if(c!=null && !activeWrite) c.disconnect(); }
-    JSONObject request(Config config, String path, JSONObject body) throws Exception {
+    JSONObject request(Config config, String path, JSONObject body) throws Exception {return request(config,path,body,()->true);}
+    JSONObject request(Config config, String path, JSONObject body,java.util.function.BooleanSupplier current) throws Exception {
         HttpURLConnection c=null;
         boolean write=body!=null;
         try {
-            c=(HttpURLConnection)new URL(config.origin+path).openConnection();
-            activeWrite=write; active=c;
+            c=connections.open(new URL(config.origin+path));
+            activeWrite=write&&!path.equals("/api/v1/disk-scan"); active=c;
             c.setInstanceFollowRedirects(false); c.setConnectTimeout(10000); c.setReadTimeout(20000); c.setUseCaches(false);
             c.setRequestProperty("Accept","application/json"); c.setRequestProperty("Authorization","Bearer "+config.token);
+            // Register the cancellable connection before the final identity check, closing the preflight/cancel race.
+            if(!current.getAsBoolean())throw new Exception("请求已取消，未发送");
             if(write) {
                 byte[] data=body.toString().getBytes(StandardCharsets.UTF_8);
                 c.setRequestMethod("POST"); c.setDoOutput(true); c.setRequestProperty("Content-Type","application/json; charset=utf-8");
@@ -51,6 +58,8 @@ final class ApiClient {
             int code=c.getResponseCode();
             if(code>=300 && code<400) throw new Exception("服务器返回了重定向，请检查 HTTPS API 地址与反向代理配置");
             if(code==401||code==403) throw new Exception("认证失败，请检查访问令牌与 API 访问权限");
+            if(code==404 && (path.equals("/api/v1/ports")||path.startsWith("/api/v1/timers")||path.equals("/api/v1/disks")||path.equals("/api/v1/disk-scan")))
+                throw new Exception("此服务器尚不支持该工具，请更新 LiteHelm 服务端至 v0.2 或更新版本");
             InputStream in=code>=200&&code<300 ? c.getInputStream():c.getErrorStream();
             if(in==null) throw new Exception("服务器返回 HTTP "+code);
             ByteArrayOutputStream buffer=new ByteArrayOutputStream();
@@ -64,7 +73,7 @@ final class ApiClient {
             if(code<200 || code>=300) throw new Exception("HTTP "+code+" · "+redact(result.optString("error","请求失败"),config));
             if(result.has("error")) throw new Exception(redact(result.optString("error"),config));
             if(path.endsWith("/logs") && result.optString("logs").getBytes(StandardCharsets.UTF_8).length>65536)throw new Exception("日志响应超过 64 KiB，请检查服务端限制");
-            if(write && !result.optBoolean("ok",false)) throw new Exception("服务器未确认操作成功，请刷新后检查");
+            if(write && !path.equals("/api/v1/disk-scan") && !result.optBoolean("ok",false)) throw new Exception("服务器未确认操作成功，请刷新后检查");
             return result;
         } catch(SocketTimeoutException e) { throw new Exception(write?"结果未确认，请刷新检查；请勿直接重复提交":"请求超时，请检查服务器或网络");
         } catch(SSLException e) { throw new Exception("安全连接失败，请检查证书与 HTTPS 地址");

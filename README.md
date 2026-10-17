@@ -36,7 +36,7 @@ sudo cat /etc/litehelm/token
 指定版本或离线安装：
 
 ```sh
-sudo sh litehelm-install.sh --version v0.1.0
+sudo sh litehelm-install.sh --version v0.2.0
 # 从同一 Release 下载本机架构程序和 SHA256SUMS，放在同一目录：
 sudo sh litehelm-install.sh --local-dir ./downloads
 ```
@@ -50,7 +50,10 @@ sudo sh litehelm-install.sh --local-dir ./downloads
 | 概览 | CPU、内存、Swap、根分区容量、网络速率、负载和运行时间 |
 | 进程 | 搜索名称/PID/用户，按内存或 CPU 平均占用排序，TERM / KILL |
 | 服务 | 搜索和状态筛选，启动/停止/重启，读取最近最多 80 行日志 |
-| 设置 | 验证并加密保存连接，服务器电源操作 |
+| 设置 | 加密保存多服务器、切换/编辑/删除主机，服务器电源操作 |
+| 收藏 | 每台主机独立保存最多 12 个常用服务，首页点击后先获取当前状态 |
+| 日志 | 本地搜索与匹配行数、复制当前结果或全部，手动刷新 |
+| 工具 | 按需查看监听端口与进程/服务、systemd 定时任务、本地挂载点容量与 inode |
 
 进程 CPU 是运行以来平均占用；网络速率需两个有效样本，首样本显示 `—`。进程结束使用 pidfd 和启动标识防止 PID 复用，要求 Linux 5.3+。服务管理与电源操作要求 systemd，OpenRC/procd 暂未支持。停止被守护的进程可能被自动拉起，需完全停止时请使用服务页。
 
@@ -82,7 +85,27 @@ ExecStart=/usr/local/bin/litehelm -listen 127.0.0.1:9091 -token-file /etc/litehe
 
 为了管理其他用户的进程和系统服务，安装器创建受 systemd 沙箱与 capabilities 限制的 root 服务。令牌代表主机管理权限，请仅保存在自己的设备中。Android 使用 Keystore + AES-GCM 加密本地配置，禁用备份。
 
-当前只保存一个服务器连接。多主机、收藏、端口排查等候选功能见 [路线图](ROADMAP.md)，尚未实现的功能不会出现在 UI 中。
+多服务器配置和收藏保存在手机加密存储，旧版本的单连接自动迁移。只刷新当前主机，切换后清空旧主机状态和速率；不查询其他保存的主机。工具页手动刷新，首页每 5 秒刷新不会加载服务、端口、任务或目录扫描。使用新工具需同步更新服务端。
+
+## 按需诊断的限制
+
+端口查看依赖系统 `ss`，缺少时显示不支持，不自动安装。最多展示 500 行；权限不足的 PID/服务归属显示未知。磁盘页只检查已知本地文件系统，跳过远程/FUSE 挂载，最多 64 个挂载点。
+
+定时任务先支持已加载的 systemd timers，显示下一次/上次触发时间；仅单调时钟任务可能没有墙上时钟日期，显示不可用。手动触发默认关闭；要允许指定任务，可 `sudo systemctl edit litehelm`：
+
+```ini
+[Service]
+Environment="LITEHELM_RUN_TIMERS=backup.timer,cleanup.timer"
+Environment="LITEHELM_SCAN_ROOTS=/var/log,/var/cache"
+```
+
+重载配置并重启 LiteHelm 后生效。timer 名称精确匹配，受保护服务不能通过 timer 绕过限制；接受启动不等于任务已完成。暂不编辑 cron 或脚本。
+
+目录占用仅在明确确认后扫描，默认只允许 `/var/log`、`/var/cache`。限制 2 秒预算、1 万项、6 层，不跟随符号链接、不跨文件系统，最多返回前 20 项，扫描间隔至少 15 秒。空的 `LITEHELM_SCAN_ROOTS` 可禁用扫描。路径按段拒绝符号链接，配置目录本身或上级含符号链接时会拒绝。
+
+扫描显示逻辑文件大小，不是实际分配量或可清理空间；硬链接按路径重复计数。遇到条数、深度、权限或时间限制显示部分结果。时间预算在文件系统调用之间检查，磁盘 I/O 卡顿可能超过预算；不会后台扫描或自动删除文件。
+安全目录扫描要求 Linux 5.6+ 的 `openat2` 支持；不可用时明确拒绝扫描。子挂载（包括同设备 bind mount）在读取属性前跳过，其他功能不受此扫描要求影响。
+
 
 ## 从源码构建
 
