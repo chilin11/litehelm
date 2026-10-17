@@ -3,7 +3,7 @@
 ## v0.2 六项低占用功能
 
 - 服务端 11 组测试在 ARM64 模拟器 Linux 内核通过；Go vet、三架构编译通过，含子挂载解析前拒绝与失效 timer 不推断目标回归。GitHub Ubuntu CI 验证 race/vet、安装器及真实 systemd 路径，覆盖监听端口、定时任务读取/授权触发、磁盘/inode、扫描及冷却。
-- 新服务端空闲 RSS 5692 KiB，8 秒内 CPU tick 增量为 0；请求 system/processes/ports/timers/disks 后 RSS 10940 KiB。示例请求耗时分别约 162/18.5/21.4/3 ms（最后为 disks，timers 无 systemd 降级）。均为模拟环境参考，未测用户目标机器。
+- 最终服务端空闲 RSS 5824 KiB，8 秒内 CPU tick 增量为 0；请求 system/processes/ports/timers/disks 后 RSS 10688 KiB。请求耗时分别约 164/24/11/2/5 ms（timers 在模拟器为无 systemd 降级）。均为模拟环境参考，未测用户目标机器。
 - Android `assembleDebug assembleRelease lintDebug --offline` 通过；Lint 0 errors / 18 warnings；主 APK 签名校验通过。纯 JDK 144 项检查覆盖连接身份、迟到响应、后台/页面/弹层轮询和日志筛选，并接入 CI。
 - 平台 Instrumentation 在 Android 模拟器通过：旧 AES-GCM 单连接迁移、稳定主机 ID、收藏隔离与持久化、密文篡改拒绝、工具不支持响应、扫描逻辑大小、正确 POST 请求体、404 更新提示、429 不重试和日志上限。
 - 双 HTTPS 模拟主机联调通过：新增 BETA 后无 ALPHA 收藏/缓存；切回恢复收藏，强制重启 App 仍保留；ALPHA 延迟响应不会覆盖切换后的 BETA，任务写入期间禁止切换。删除主机确认已检查，未删除测试主机。

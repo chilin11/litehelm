@@ -50,7 +50,11 @@ token=Path('/etc/litehelm/token').read_text().strip()
 def request(path, body=None):
  data=json.dumps(body).encode() if body is not None else None
  r=urllib.request.Request('http://127.0.0.1:9091/api/v1/'+path,data=data,headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'})
- with urllib.request.urlopen(r,timeout=20) as v:return json.load(v)
+ try:
+  with urllib.request.urlopen(r,timeout=20) as v:return json.load(v)
+ except urllib.error.HTTPError as e:
+  print('API failure',path,e.code,e.read().decode(),flush=True)
+  raise
 assert request('system')['capabilities']['service_control']
 name='fixture-worker.service'
 assert any(s['name']==name for s in request('services')['services'])
