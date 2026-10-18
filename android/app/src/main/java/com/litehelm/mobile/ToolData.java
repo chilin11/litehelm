@@ -11,6 +11,13 @@ final class ToolData {
             if(!"logical_bytes".equals(data.getString("metric")))throw new Exception(Text.get(R.string.err_scan_metric));
         }else if(path.equals("/api/v1/disks")) {
             data.getJSONArray("disks");data.getJSONArray("scan_roots");data.getBoolean("truncated");
+        }else if(path.equals("/api/v1/jobs")) {
+            if(data.getBoolean("supported")){data.getString("runner");data.getString("user");}
+            JSONArray jobs=data.getJSONArray("jobs");for(int i=0;i<jobs.length();i++){JSONObject job=jobs.getJSONObject(i);job.getString("id");job.getString("state");}
+        }else if(path.startsWith("/api/v1/jobs/")) {
+            JSONObject job=data.getJSONObject("job");job.getString("id");job.getString("state");
+            data.getString("output");long offset=data.getLong("offset"),next=data.getLong("next_offset"),size=data.getLong("size");
+            if(offset<0||next<offset||size<next)throw new Exception(Text.get(R.string.err_tool_format));
         }else {
             boolean supported=data.getBoolean("supported");JSONArray entries=data.getJSONArray(path.endsWith("ports")?"ports":"timers");
             if(supported)data.getBoolean("truncated");

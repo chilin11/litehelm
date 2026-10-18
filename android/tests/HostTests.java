@@ -25,6 +25,12 @@ public final class HostTests {
         check(LogFilter.filter("aaaa","aa").matches==2);
         check(LogFilter.filter("","").lines==0);
         check(LogFilter.filter("错误\n正常","错误").matches==1);
-        System.out.println("PASS: "+checks+" checks (identity, stale requests, background/page/sheet polling, original logs, local matching)");
+        check(JobOutput.normalize("a\r\nb\r\n").equals("a\nb\n"));check(JobOutput.fits("echo 中文"));check(!JobOutput.fits("  \n "));check(!JobOutput.fits("a\0b"));
+        check(JobOutput.fits("x".repeat(JobOutput.SCRIPT_LIMIT)));check(!JobOutput.fits("x".repeat(JobOutput.SCRIPT_LIMIT+1)));check(!JobOutput.fits("中".repeat(JobOutput.SCRIPT_LIMIT/3+1)));
+        for(String s:new String[]{"succeeded","failed","cancelled","timeout","killed","lost"})check(JobOutput.finished(s));check(!JobOutput.finished("running"));check(!JobOutput.finished("unknown"));
+        check(JobOutput.timeoutIndex(300)==0);check(JobOutput.timeoutIndex(86400)==3);check(JobOutput.timeoutIndex(42)==1);
+        check(JobOutput.append("ab","cd",10).equals("abcd"));check(JobOutput.append("line1\nline2\n","line3\n",14).equals("line2\nline3\n"));
+        check(JobOutput.append("a\uD83D\uDE00","b",2).equals("b"));check(JobOutput.append("xx\uD83D\uDE00yy","",3).equals("yy"));
+        System.out.println("PASS: "+checks+" checks (identity, stale requests, background/page/sheet polling, original logs, local matching, script jobs)");
     }
 }

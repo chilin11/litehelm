@@ -58,7 +58,7 @@ final class ApiClient {
             int code=c.getResponseCode();
             if(code>=300 && code<400) throw new Exception(Text.get(R.string.err_redirect));
             if(code==401||code==403) throw new Exception(Text.get(R.string.err_auth));
-            if(code==404 && (path.equals("/api/v1/ports")||path.startsWith("/api/v1/timers")||path.equals("/api/v1/disks")||path.equals("/api/v1/disk-scan")))
+            if(code==404 && (path.equals("/api/v1/ports")||path.startsWith("/api/v1/timers")||path.equals("/api/v1/disks")||path.equals("/api/v1/disk-scan")||path.equals("/api/v1/jobs")))
                 throw new Exception(Text.get(R.string.err_tool_unsupported));
             InputStream in=code>=200&&code<300 ? c.getInputStream():c.getErrorStream();
             if(in==null) throw new Exception(Text.get(R.string.err_http,code));

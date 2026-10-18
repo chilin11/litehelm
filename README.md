@@ -36,7 +36,7 @@ sudo cat /etc/litehelm/token
 指定版本或离线安装：
 
 ```sh
-sudo sh litehelm-install.sh --version v0.2.0
+sudo sh litehelm-install.sh --version v0.3.0
 # 从同一 Release 下载本机架构程序和 SHA256SUMS，放在同一目录：
 sudo sh litehelm-install.sh --local-dir ./downloads
 ```
@@ -54,6 +54,7 @@ sudo sh litehelm-install.sh --local-dir ./downloads
 | 收藏 | 每台主机独立保存最多 12 个常用服务，首页点击后先获取当前状态 |
 | 日志 | 本地搜索与匹配行数、复制当前结果或全部，手动刷新 |
 | 工具 | 按需查看监听端口与进程/服务、systemd 定时任务、本地挂载点容量与 inode |
+| 脚本 | 服务端开启后粘贴/编辑 Shell 脚本运行，查看实时输出与退出码，可取消、重跑、删除记录 |
 
 进程 CPU 是运行以来平均占用；网络速率需两个有效样本，首样本显示 `—`。进程结束使用 pidfd 和启动标识防止 PID 复用，要求 Linux 5.3+。服务管理与电源操作要求 systemd，OpenRC/procd 暂未支持。停止被守护的进程可能被自动拉起，需完全停止时请使用服务页。
 
@@ -79,6 +80,25 @@ ExecStart=/usr/local/bin/litehelm -listen 127.0.0.1:9091 -token-file /etc/litehe
 
 重载配置并重启服务后，App 会显示电源操作。需手输主机名确认，接受后延迟 5 秒执行。关机后需要供应商控制台或其他方式开机。写操作不会自动重试；网络中断时请先检查执行结果。
 
+## 运行脚本（默认关闭）
+
+开启后，持有令牌的设备可在服务器上以 LiteHelm 服务用户身份执行**任意命令**（默认安装为 root），适合部署、更新等一次性任务。只在确实需要时开启：
+
+```sh
+sudo sh install.sh --enable-exec    # 开启，保留令牌与现有配置
+sudo sh install.sh --disable-exec   # 关闭
+```
+
+开启会添加 `20-litehelm-exec.conf`（`LITEHELM_ALLOW_EXEC=1`、`StateDirectory=litehelm`）；之后不带参数重装保持当前开关不变。手动运行可用 `-allow-exec` 与 `-jobs-dir`。App 入口：主机工具 → 运行脚本。
+
+- **root + systemd**：每个脚本是独立的临时 unit `litehelm-job-<ID>.service`，不受 LiteHelm 沙箱与 capabilities 限制，可写 `/etc`、`/usr`、`/opt`；LiteHelm 重启或升级不会中断任务。工作目录为 root 家目录。服务页不能停止这些 unit，请在任务页取消。
+- **非 root 运行 LiteHelm**：脚本是 LiteHelm 的子进程组，权限与该用户相同，并继承 unit 沙箱（如 `ProtectSystem=strict`、`ProtectHome=read-only`）；需写入的路径请用 drop-in 的 `ReadWritePaths=` 放行。LiteHelm 重启会中断任务，记录显示“丢失”。
+- 首行 `#!` 指定解释器，否则用 `/bin/sh`；Windows 换行自动转换。标准输入为空，不能交互，请使用 `-y`、`DEBIAN_FRONTEND=noninteractive` 等参数。
+- 脚本结束时，它启动的后台进程会一起结束；常驻程序请交给 systemd 服务或容器。
+- 时间上限可选 5 分钟 / 30 分钟 / 2 小时 / 24 小时（API 允许 10 秒–24 小时），超时或取消先发 TERM，再发 KILL。最多 4 个同时运行，保留最近 30 条记录（脚本、输出、结果），位于 `/var/lib/litehelm/jobs`（0700）。
+- 输出总量不设上限，请避免无限刷屏；App 打开任务页时每 2 秒增量读取，只保留最新约 128K 字符，关闭页面即停止。
+- 服务日志只记录任务 ID、名称、字节数和结果，不记录脚本内容；脚本可能含密钥，记录保存在服务器上，直到被清理或删除。
+
 ## 资源与权限
 
 早期 ARM64 模拟器 Linux 内核参考：空闲 RSS 约 **5.6 MiB**，连续请求后约 **10.5 MiB**；状态请求约 **151 ms**（包含 150 ms CPU 采样等待），进程列表约 **11 ms**。这些不是目标服务器性能保证，进程数量、内核和硬件都会影响结果。没有常驻历史采集和持久化指标库。
@@ -99,7 +119,7 @@ Environment="LITEHELM_RUN_TIMERS=backup.timer,cleanup.timer"
 Environment="LITEHELM_SCAN_ROOTS=/var/log,/var/cache"
 ```
 
-重载配置并重启 LiteHelm 后生效。timer 名称精确匹配，受保护服务不能通过 timer 绕过限制；接受启动不等于任务已完成。暂不编辑 cron 或脚本。
+重载配置并重启 LiteHelm 后生效。timer 名称精确匹配，受保护服务不能通过 timer 绕过限制；接受启动不等于任务已完成。不编辑 cron；任意脚本见“运行脚本”。
 
 目录占用仅在明确确认后扫描，默认只允许 `/var/log`、`/var/cache`。限制 2 秒预算、1 万项、6 层，不跟随符号链接、不跨文件系统，最多返回前 20 项，扫描间隔至少 15 秒。空的 `LITEHELM_SCAN_ROOTS` 可禁用扫描。路径按段拒绝符号链接，配置目录本身或上级含符号链接时会拒绝。
 
@@ -147,7 +167,7 @@ sudo rm /etc/systemd/system/litehelm.service /usr/local/bin/litehelm
 sudo systemctl daemon-reload
 ```
 
-令牌和自定义 drop-in 保留；需要彻底清除时再自行删除 `/etc/litehelm/`、`/etc/systemd/system/litehelm.service.d/`，并移除对应的反向代理规则。
+令牌和自定义 drop-in 保留；需要彻底清除时再自行删除 `/etc/litehelm/`、`/etc/systemd/system/litehelm.service.d/`、`/var/lib/litehelm/`（脚本任务记录），并移除对应的反向代理规则。
 
 ## License
 

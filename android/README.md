@@ -1,6 +1,6 @@
-# 轻舵 · LiteHelm Android v0.2.1
+# 轻舵 · LiteHelm Android v0.3.0
 
-原生 Java Views，零第三方运行时依赖。最低 Android 8.0（API 26），编译/目标 API 35；应用 ID `com.litehelm.mobile`。版本 `versionCode 3 / versionName 0.2.1`。
+原生 Java Views，零第三方运行时依赖。最低 Android 8.0（API 26），编译/目标 API 35；应用 ID `com.litehelm.mobile`。版本 `versionCode 4 / versionName 0.3.0`。
 
 ## 构建
 

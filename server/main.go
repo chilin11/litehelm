@@ -39,12 +39,17 @@ type app struct {
 	unit     string
 	scanMu   sync.Mutex
 	lastScan time.Time
+	// jobs is nil unless -allow-exec is set and the jobs directory is usable.
+	jobs       *jobRunner
+	execReason string
 }
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:9091", "HTTP listen address; loopback only")
 	tokenFile := flag.String("token-file", "/etc/litehelm/token", "file containing a random bearer token (mode 0600)")
 	power := flag.Bool("allow-power", false, "enable reboot/poweroff (requires root and systemd)")
+	allowExec := flag.Bool("allow-exec", os.Getenv("LITEHELM_ALLOW_EXEC") == "1", "enable arbitrary script jobs as the LiteHelm user (also LITEHELM_ALLOW_EXEC=1)")
+	jobsFlag := flag.String("jobs-dir", "", "script job directory (default $STATE_DIRECTORY/jobs or /var/lib/litehelm/jobs)")
 	generate := flag.Bool("generate-token", false, "print a new random token and exit")
 	flag.Parse()
 	if *generate {
@@ -78,6 +83,14 @@ func main() {
 	if a.unit == "" {
 		a.unit = "litehelm.service"
 	}
+	a.execReason = "start the server with -allow-exec or LITEHELM_ALLOW_EXEC=1"
+	if *allowExec {
+		// A broken jobs directory disables scripts but keeps the management API reachable.
+		if a.jobs, err = newJobRunner(jobsDir(*jobsFlag)); err != nil {
+			a.execReason = err.Error()
+			log.Printf("script jobs disabled: %v", err)
+		}
+	}
 	srv := &http.Server{Addr: *listen, Handler: a, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 25 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -87,7 +100,11 @@ func main() {
 		defer cancel()
 		_ = srv.Shutdown(c)
 	}()
-	log.Printf("LiteHelm listening on %s (power=%t)", *listen, *power)
+	execMode := "off"
+	if a.jobs != nil {
+		execMode = a.jobs.mode() + " as " + a.jobs.user
+	}
+	log.Printf("LiteHelm listening on %s (power=%t exec=%s)", *listen, *power, execMode)
 	if e := srv.ListenAndServe(); e != nil && !errors.Is(e, http.ErrServerClosed) {
 		log.Fatal(e)
 	}
@@ -155,18 +172,21 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.disks(w, r)
 	case p == "/api/v1/disk-scan" && r.Method == "POST":
 		a.diskScan(w, r)
+	case p == "/api/v1/jobs" || strings.HasPrefix(p, "/api/v1/jobs/"):
+		a.jobsEndpoint(w, r)
 	case p == "/api/v1/power" && r.Method == "POST":
 		a.powerAction(w, r)
 	default:
 		fail(w, 404, "Unknown API endpoint")
 	}
 }
-func decode(w http.ResponseWriter, r *http.Request, v any) bool {
+func decode(w http.ResponseWriter, r *http.Request, v any) bool { return decodeLimit(w, r, v, 4096) }
+func decodeLimit(w http.ResponseWriter, r *http.Request, v any, limit int64) bool {
 	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 		fail(w, 415, "Content-Type must be application/json")
 		return false
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	defer r.Body.Close()
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
@@ -277,7 +297,7 @@ func (a *app) system(w http.ResponseWriter, r *http.Request) {
 			osName = strings.Trim(strings.TrimPrefix(l, "PRETTY_NAME="), "\"")
 		}
 	}
-	output(w, 200, map[string]any{"hostname": name, "os": osName, "arch": runtime.GOARCH, "uptime_seconds": uint64(uptime()), "cpu_percent": cpu, "cpu_cores": runtime.NumCPU(), "load": load, "memory": map[string]uint64{"total": mem["MemTotal"], "used": mem["MemTotal"] - avail, "available": avail}, "swap": map[string]uint64{"total": mem["SwapTotal"], "used": mem["SwapTotal"] - mem["SwapFree"]}, "disk": map[string]uint64{"total": total, "used": used, "free": free}, "network": map[string]uint64{"rx_bytes": rx, "tx_bytes": tx}, "timestamp": time.Now().Unix(), "capabilities": map[string]bool{"process_signal": os.Geteuid() == 0, "service_control": os.Geteuid() == 0 && systemd(), "power": a.power && os.Geteuid() == 0 && systemd()}})
+	output(w, 200, map[string]any{"hostname": name, "os": osName, "arch": runtime.GOARCH, "uptime_seconds": uint64(uptime()), "cpu_percent": cpu, "cpu_cores": runtime.NumCPU(), "load": load, "memory": map[string]uint64{"total": mem["MemTotal"], "used": mem["MemTotal"] - avail, "available": avail}, "swap": map[string]uint64{"total": mem["SwapTotal"], "used": mem["SwapTotal"] - mem["SwapFree"]}, "disk": map[string]uint64{"total": total, "used": used, "free": free}, "network": map[string]uint64{"rx_bytes": rx, "tx_bytes": tx}, "timestamp": time.Now().Unix(), "capabilities": map[string]bool{"process_signal": os.Geteuid() == 0, "service_control": os.Geteuid() == 0 && systemd(), "power": a.power && os.Geteuid() == 0 && systemd(), "exec": a.jobs != nil}})
 }
 
 type process struct {

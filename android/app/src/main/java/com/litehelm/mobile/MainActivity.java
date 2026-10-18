@@ -57,6 +57,7 @@ public final class MainActivity extends Activity {
     private static final class State {
         String address="", token="", name="", editingId="", processQuery="", serviceQuery="", notice="";
         boolean draft, cpu; int page=3, filter;
+        String jobName="", jobScript=""; int jobTimeout=1800;
         volatile ApiClient.Config config;
         ProfileBook book;
         volatile MainActivity owner;
@@ -442,7 +443,8 @@ public final class MainActivity extends Activity {
         LinearLayout box=sheetBox(t(R.string.host_tools));addText(box,hostLabel()+"\n"+t(R.string.tools_note),12,SECONDARY);gap(box,20);
         box.addView(compact(t(R.string.listening_ports),()->openTool("ports")),new LinearLayout.LayoutParams(-1,-2));gap(box,8);
         box.addView(compact(t(R.string.systemd_timers),()->openTool("timers")),new LinearLayout.LayoutParams(-1,-2));gap(box,8);
-        box.addView(compact(t(R.string.disks_scan_menu),()->openTool("disks")),new LinearLayout.LayoutParams(-1,-2));showSheet(box);
+        box.addView(compact(t(R.string.disks_scan_menu),()->openTool("disks")),new LinearLayout.LayoutParams(-1,-2));gap(box,8);
+        box.addView(compact(t(R.string.scripts_menu),()->openJobs()),new LinearLayout.LayoutParams(-1,-2));showSheet(box);
     }
     private void toolRead(String path,JSONObject body,Result success,java.util.function.Consumer<String> failure){
         if(busy||ApiClient.MUTATING.get()||config==null||!foreground||sheet==null){toast(t(R.string.busy));return;}
@@ -502,6 +504,87 @@ public final class MainActivity extends Activity {
         },e->showMessage(info,t(R.string.scan_failed,e),true));
     }
 
+    // Script jobs: the server decides whether execution is enabled; drafts live in the retained State.
+    private void openJobs(){
+        if(busy||ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}
+        LinearLayout box=sheetBox(t(R.string.scripts_title));addText(box,t(R.string.host_line,hostLabel()),12,SECONDARY);gap(box,12);TextView info=message(box);LinearLayout body=column();box.addView(body);
+        showSheet(box);expandSheet();showMessage(info,t(R.string.reading),false);
+        toolRead("/api/v1/jobs",null,j->{showMessage(info,"",false);renderJobs(body,j);},e->showMessage(info,e,true));
+    }
+    private void renderJobs(LinearLayout body,JSONObject data) throws Exception {
+        if(!data.getBoolean("supported")){addText(body,t(R.string.exec_disabled),15,WARN);gap(body,8);String reason=data.optString("message");if(!reason.isEmpty()){addText(body,reason,12,SECONDARY);gap(body,8);}addText(body,t(R.string.exec_enable_hint),12,MUTED);return;}
+        String user=data.getString("user");boolean unit=data.getString("runner").equals("systemd");
+        addText(body,t(R.string.exec_identity,user,t(unit?R.string.runner_systemd:R.string.runner_direct)),14,MINT);gap(body,8);addText(body,t(R.string.exec_warning,user),12,WARN);gap(body,20);
+        EditText name=input(t(R.string.hint_job_name),false);name.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);name.setText(state.jobName);watch(name,()->state.jobName=name.getText().toString());field(body,t(R.string.job_name),name);
+        EditText script=input(t(R.string.hint_script),false);script.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE|android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);script.setSingleLine(false);script.setHorizontallyScrolling(false);script.setMinLines(6);script.setMaxLines(14);script.setGravity(Gravity.TOP|Gravity.START);script.setTypeface(Typeface.MONOSPACE);script.setTextSize(13);
+        script.setText(state.jobScript);watch(script,()->state.jobScript=script.getText().toString());field(body,t(R.string.job_script),script);
+        body.addView(label(t(R.string.job_timeout)));gap(body,8);LinearLayout times=row();final Button[] choices=new Button[JobOutput.TIMEOUTS.length];
+        Runnable paint=()->{for(int i=0;i<choices.length;i++)choices[i].setTextColor(JobOutput.TIMEOUTS[i]==state.jobTimeout?MINT:SECONDARY);};
+        for(int i=0;i<choices.length;i++){final int seconds=JobOutput.TIMEOUTS[i];choices[i]=compact(timeoutLabel(seconds),()->{state.jobTimeout=seconds;paint.run();});choices[i].setTextSize(12);choices[i].setPadding(dp(2),dp(10),dp(2),dp(10));LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,-2,1);if(i>0)p.leftMargin=dp(4);times.addView(choices[i],p);}
+        paint.run();body.addView(times);gap(body,16);
+        body.addView(button(t(R.string.run_script),true,false,()->confirmJob(user)),new LinearLayout.LayoutParams(-1,-2));divider(body);
+        addText(body,t(R.string.recent_jobs),15,TEXT);gap(body,6);addText(body,t(R.string.jobs_kept_note),12,MUTED);gap(body,12);
+        JSONArray jobs=data.getJSONArray("jobs");if(jobs.length()==0)addText(body,t(R.string.jobs_empty),12,SECONDARY);
+        for(int i=0;i<jobs.length();i++){JSONObject job=jobs.getJSONObject(i);String id=job.getString("id");Button item=compact(job.optString("name",id)+"\n"+jobState(job)+" · "+stamp(job.optLong("started_at")),()->openJob(id));item.setGravity(Gravity.START|Gravity.CENTER_VERTICAL);item.setTextColor(jobColor(job.getString("state")));body.addView(item,new LinearLayout.LayoutParams(-1,-2));gap(body,6);}
+    }
+    private String timeoutLabel(int seconds){int[] labels={R.string.timeout_5m,R.string.timeout_30m,R.string.timeout_2h,R.string.timeout_24h};return t(labels[JobOutput.timeoutIndex(seconds)]);}
+    private void confirmJob(String user){
+        if(busy||ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}
+        final String script=JobOutput.normalize(state.jobScript),name=state.jobName.trim();final int timeout=JobOutput.TIMEOUTS[JobOutput.timeoutIndex(state.jobTimeout)];
+        if(!JobOutput.fits(script)){toast(t(R.string.err_script_invalid));return;}
+        LinearLayout box=sheetBox(t(R.string.confirm_script_title));addText(box,t(R.string.host_line,hostLabel()),14,MINT);gap(box,12);
+        addText(box,t(R.string.confirm_script_summary,name.isEmpty()?"—":name,timeoutLabel(timeout),bytes(script.getBytes(java.nio.charset.StandardCharsets.UTF_8).length)),14,SECONDARY);gap(box,12);
+        TextView preview=text(script.length()>2000?script.substring(0,2000)+"\n…":script,12,TEXT);preview.setTypeface(Typeface.MONOSPACE);preview.setPadding(dp(12),dp(12),dp(12),dp(12));preview.setBackground(shape(RAISED,12,false));box.addView(preview,new LinearLayout.LayoutParams(-1,-2));gap(box,12);
+        addText(box,t(R.string.exec_warning,user),12,WARN);gap(box,24);
+        box.addView(button(t(R.string.confirm_script_run,user),true,true,()->{JSONObject body=new JSONObject();try{body.put("name",name).put("script",script).put("timeout_seconds",timeout);}catch(JSONException e){return;}
+            mutate("/api/v1/jobs",body,t(R.string.job_started),j->openJob(j.getJSONObject("job").getString("id")),false);}),new LinearLayout.LayoutParams(-1,-2));showSheet(box);
+    }
+    private void openJob(String id){
+        if(busy||ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}
+        LinearLayout box=sheetBox(t(R.string.scripts_title));TextView title=text(id,16,TEXT);title.setTextIsSelectable(true);box.addView(title);gap(box,6);addText(box,t(R.string.host_line,hostLabel()),12,SECONDARY);gap(box,12);
+        TextView status=text("",14,SECONDARY),times=text("",12,MUTED);box.addView(status);gap(box,6);box.addView(times);TextView info=message(box);LinearLayout actions=column();box.addView(actions);gap(box,16);
+        addText(box,t(R.string.job_output),15,TEXT);gap(box,8);TextView trimmed=text(t(R.string.job_output_trimmed),12,WARN);trimmed.setVisibility(View.GONE);box.addView(trimmed);
+        TextView out=text(t(R.string.loading),12,TEXT);out.setTypeface(Typeface.MONOSPACE);out.setTextIsSelectable(true);box.addView(out,new LinearLayout.LayoutParams(-1,-2));
+        final String[] output={""},script={""};final long[] next={-1};
+        showSheet(box);expandSheet();final int sg=sheetGeneration;final Runnable[] fetch=new Runnable[1];
+        // Poll only this open sheet; dismissal, navigation and background all change sheetGeneration or foreground.
+        fetch[0]=()->{handler.removeCallbacks(fetch[0]);if(sheet==null||sheetGeneration!=sg||!foreground)return;if(busy||ApiClient.MUTATING.get()){handler.postDelayed(fetch[0],2000);return;}
+            toolRead("/api/v1/jobs/"+id+(next[0]<0?"":"?offset="+next[0]),null,j->{
+                JSONObject job=j.getJSONObject("job");String chunk=j.getString("output");long offset=j.getLong("offset"),size=j.getLong("size");
+                if(next[0]<0||offset!=next[0]){output[0]=chunk;if(next[0]<0)script[0]=j.optString("script");if(offset>0)trimmed.setVisibility(View.VISIBLE);}
+                else{String joined=JobOutput.append(output[0],chunk,JobOutput.KEEP_CHARS);if(joined.length()<output[0].length()+chunk.length())trimmed.setVisibility(View.VISIBLE);output[0]=joined;}
+                next[0]=j.getLong("next_offset");boolean more=size-next[0]>3,running=!JobOutput.finished(job.getString("state"));
+                renderJob(job,title,status,times,actions,output,script,fetch[0],running);out.setText(output[0].isEmpty()?t(R.string.job_output_empty):output[0]);showMessage(info,"",false);
+                if(more||running)handler.postDelayed(fetch[0],more?100:2000);
+            },e->showMessage(info,e,true));};
+        fetch[0].run();
+    }
+    private void renderJob(JSONObject job,TextView title,TextView status,TextView times,LinearLayout actions,String[] output,String[] script,Runnable fetch,boolean running){
+        String id=job.optString("id"),name=job.optString("name",id);title.setText(name);status.setText(jobState(job));status.setTextColor(jobColor(job.optString("state")));
+        times.setText(t(R.string.job_started_at,stamp(job.optLong("started_at")))+(running?"\n"+t(R.string.job_polling):job.optLong("finished_at")>0?"\n"+t(R.string.job_finished_at,stamp(job.optLong("finished_at"))):""));
+        actions.removeAllViews();gap(actions,12);actions.addView(compact(t(R.string.refresh),fetch),new LinearLayout.LayoutParams(-1,-2));gap(actions,8);
+        if(running){actions.addView(button(t(R.string.cancel_job),false,true,()->confirmCancelJob(id,name)),new LinearLayout.LayoutParams(-1,-2));gap(actions,8);}
+        actions.addView(compact(t(R.string.copy_output),()->copyLogs(name,output[0])),new LinearLayout.LayoutParams(-1,-2));gap(actions,8);
+        if(!script[0].isEmpty()){actions.addView(compact(t(R.string.rerun_job),()->{state.jobScript=script[0];state.jobName=name;state.jobTimeout=JobOutput.TIMEOUTS[JobOutput.timeoutIndex(job.optInt("timeout_seconds"))];openJobs();}),new LinearLayout.LayoutParams(-1,-2));gap(actions,8);}
+        actions.addView(compact(t(R.string.job_list),()->openJobs()),new LinearLayout.LayoutParams(-1,-2));
+        if(!running){gap(actions,8);actions.addView(button(t(R.string.delete_job),false,true,()->mutate("/api/v1/jobs/"+id+"/delete",new JSONObject(),t(R.string.job_deleted),()->openJobs(),false)),new LinearLayout.LayoutParams(-1,-2));}
+        gap(actions,8);addText(actions,t(R.string.clipboard_warning),12,MUTED);
+    }
+    private void confirmCancelJob(String id,String name){
+        if(busy||ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}
+        LinearLayout box=sheetBox(t(R.string.cancel_job_title));addText(box,t(R.string.host_line,hostLabel()),14,MINT);gap(box,12);addText(box,name,16,TEXT);gap(box,12);addText(box,t(R.string.cancel_job_warning),14,SECONDARY);gap(box,24);
+        box.addView(button(t(R.string.cancel_job),true,true,()->mutate("/api/v1/jobs/"+id+"/cancel",new JSONObject(),t(R.string.cancel_requested),()->openJob(id),false)),new LinearLayout.LayoutParams(-1,-2));showSheet(box);
+    }
+    private static String jobState(JSONObject job){
+        switch(job.optString("state")){
+            case "running":return t(R.string.job_state_running);case "succeeded":return t(R.string.job_state_succeeded);case "failed":return t(R.string.job_state_failed,job.optInt("exit_code"));
+            case "cancelled":return t(R.string.job_state_cancelled);case "timeout":return t(R.string.job_state_timeout);case "killed":return t(R.string.job_state_killed,job.optString("signal"));
+            case "lost":return t(R.string.job_state_lost);default:return t(R.string.job_state_unknown);
+        }
+    }
+    private static int jobColor(String state){return state.equals("succeeded")?MINT:state.equals("running")?CYAN:state.equals("failed")||state.equals("killed")||state.equals("lost")?RED:WARN;}
+    private static String stamp(long seconds){return seconds<=0?"—":new SimpleDateFormat("MM-dd HH:mm:ss",Locale.CHINA).format(new Date(seconds*1000));}
+
     private void expandSheet(){if(sheet!=null&&sheet.getWindow()!=null)sheet.getWindow().setLayout(Math.min(getResources().getDisplayMetrics().widthPixels,dp(600)),(int)(getResources().getDisplayMetrics().heightPixels*.85));}
     private LinearLayout sheetBox(String title){LinearLayout box=column();box.setPadding(dp(24),dp(12),dp(24),dp(24));View handle=new View(this);handle.setBackground(shape(MUTED,2,false));LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(dp(32),dp(4));hp.gravity=Gravity.CENTER_HORIZONTAL;hp.bottomMargin=dp(12);box.addView(handle,hp);LinearLayout top=row();TextView name=text(title,18,TEXT);name.setTextIsSelectable(true);weight(top,name);Button close=compact(t(R.string.close),()->{if(sheet!=null)sheet.dismiss();});close.setContentDescription(t(R.string.close_sheet));LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(-2,-2);cp.leftMargin=dp(8);top.addView(close,cp);box.addView(top);gap(box,20);return box;}
     private void showSheet(LinearLayout box){
@@ -511,15 +594,16 @@ public final class MainActivity extends Activity {
         d.setOnDismissListener(dialog->{if(sheet==d){sheet=null;sheetGeneration++;loadPending=false;api.cancelRead();schedulePoll();}});sheet=d;d.show();
         int max=(int)(getResources().getDisplayMetrics().heightPixels*.85);box.measure(View.MeasureSpec.makeMeasureSpec(Math.min(getResources().getDisplayMetrics().widthPixels,dp(600)),View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(0,View.MeasureSpec.UNSPECIFIED));if(w!=null)w.setLayout(Math.min(getResources().getDisplayMetrics().widthPixels,dp(600)),Math.min(box.getMeasuredHeight(),max));
     }
-    private void mutate(String path,JSONObject body,String success,Runnable after,boolean power){
+    private void mutate(String path,JSONObject body,String success,Runnable after,boolean power){mutate(path,body,success,j->after.run(),power);}
+    private void mutate(String path,JSONObject body,String success,Result after,boolean power){
         if(busy || config==null || !foreground || !ApiClient.MUTATING.compareAndSet(false,true)){toast(t(R.string.busy_existing));return;}
         busy=true;handler.removeCallbacks(poll);final ApiClient.Config credentials=config;final State targetState=state;updateControls();if(sheet!=null)sheet.dismiss();toast(t(R.string.submitting));
         final int gen=generation;
-        ApiClient.IO.execute(()->{String error=null;try{if(!RequestPolicy.current(foreground,generation,gen,config,credentials,false,0,0))throw new Exception(t(R.string.op_cancelled));api.request(credentials,path,body,()->RequestPolicy.current(foreground,generation,gen,config,credentials,false,0,0));}catch(Exception e){error=e.getMessage()==null?t(R.string.op_unconfirmed):ApiClient.redact(e.getMessage(),credentials);}final String problem=error;
+        ApiClient.IO.execute(()->{String error=null;JSONObject response=null;try{if(!RequestPolicy.current(foreground,generation,gen,config,credentials,false,0,0))throw new Exception(t(R.string.op_cancelled));response=api.request(credentials,path,body,()->RequestPolicy.current(foreground,generation,gen,config,credentials,false,0,0));}catch(Exception e){error=e.getMessage()==null?t(R.string.op_unconfirmed):ApiClient.redact(e.getMessage(),credentials);}final String problem=error;final JSONObject result=response;
             runOnUiThread(()->{ApiClient.MUTATING.set(false);busy=false;MainActivity owner=targetState.owner;if(owner==null||owner.destroyed||!owner.foreground){targetState.notice=problem==null?success:problem;return;}
                 owner.processesFresh=false;owner.servicesFresh=false;
                 if(owner!=this||owner.config!=credentials||gen!=generation){owner.toast(problem==null?success:problem);owner.loadCurrent();return;}
-                if(problem==null){toast(success);after.run();}else{status(false);systemFresh=false;processesFresh=false;servicesFresh=false;systemError=problem;toast(problem);if(page==1)showMessage(processMessage,t(R.string.error_refresh_check,problem),true);if(page==2)showMessage(serviceMessage,t(R.string.error_refresh_check,problem),true);if(page==3)showMessage(settingsError,problem,true);updateDashboard();updatePower();}
+                if(problem==null){toast(success);try{after.accept(result);}catch(Exception e){toast(t(R.string.err_tool_format));}}else{status(false);systemFresh=false;processesFresh=false;servicesFresh=false;systemError=problem;toast(problem);if(page==1)showMessage(processMessage,t(R.string.error_refresh_check,problem),true);if(page==2)showMessage(serviceMessage,t(R.string.error_refresh_check,problem),true);if(page==3)showMessage(settingsError,problem,true);updateDashboard();updatePower();}
                 updateControls();if(!power){if(loadPending){loadPending=false;loadCurrent();}else schedulePoll();}
             });
         });

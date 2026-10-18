@@ -4,19 +4,24 @@ set -eu
 REPO=chilin11/litehelm
 VERSION=latest
 LOCAL_DIR=
+EXEC=keep
 usage() {
  cat <<'HELP'
 LiteHelm · 轻舵
-Usage: sudo sh install.sh [--version vX.Y.Z] [--local-dir DIRECTORY]
-  --version    Install a specific GitHub release (default: latest)
-  --local-dir  Use binaries and SHA256SUMS from a local directory
-  --help       Show help without changing anything
-Existing token, service unit and drop-ins are preserved.
+Usage: sudo sh install.sh [--version vX.Y.Z] [--local-dir DIRECTORY] [--enable-exec|--disable-exec]
+  --version       Install a specific GitHub release (default: latest)
+  --local-dir     Use binaries and SHA256SUMS from a local directory
+  --enable-exec   Allow the app to run arbitrary scripts as the service user (root by default)
+  --disable-exec  Remove script execution again
+  --help          Show help without changing anything
+Existing token, service unit and drop-ins are preserved; script execution is unchanged unless requested.
 HELP
 }
 while [ "$#" -gt 0 ]; do
  case "$1" in
   --version|--local-dir) [ "$#" -ge 2 ] || { usage; exit 1; }; opt=$1; shift; if [ "$opt" = --version ]; then VERSION=$1; else LOCAL_DIR=$1; fi;;
+  --enable-exec) EXEC=on;;
+  --disable-exec) EXEC=off;;
   --help|-h) usage; exit 0;;
   *) echo "Unknown option: $1" >&2; usage; exit 1;;
  esac
@@ -119,12 +124,24 @@ if [ ! -e "$compat" ]; then
  chmod 644 "$compat"
  added_compat=true
 fi
+# Script jobs need a writable state directory under ProtectSystem=strict.
+exec_conf=/etc/systemd/system/litehelm.service.d/20-litehelm-exec.conf
+had_exec=false
+if [ -e "$exec_conf" ]; then cp -p "$exec_conf" "$tmp/exec.conf"; had_exec=true; fi
+if [ "$EXEC" = on ]; then
+ install -d -m 755 /etc/systemd/system/litehelm.service.d
+ printf '%s\n' '[Service]' '# Managed by install.sh --enable-exec: the app may run arbitrary scripts as this service user.' 'Environment=LITEHELM_ALLOW_EXEC=1' 'StateDirectory=litehelm' 'StateDirectoryMode=0700' > "$exec_conf"
+ chmod 644 "$exec_conf"
+elif [ "$EXEC" = off ]; then
+ rm -f "$exec_conf"
+fi
 rollback() {
  echo 'Startup failed; restoring previous binary and service state' >&2
  systemctl stop litehelm.service || true
  if [ "$had_binary" = true ]; then install -m 755 "$tmp/previous" /usr/local/bin/litehelm.new; mv -f /usr/local/bin/litehelm.new /usr/local/bin/litehelm; else rm -f /usr/local/bin/litehelm; fi
  if [ "$had_unit" = false ]; then rm -f /etc/systemd/system/litehelm.service; fi
  if [ "$added_compat" = true ]; then rm -f "$compat"; fi
+ if [ "$had_exec" = true ]; then cp -p "$tmp/exec.conf" "$exec_conf"; else rm -f "$exec_conf"; fi
  systemctl daemon-reload || true
  if [ "$was_active" = true ]; then systemctl start litehelm.service || true; fi
  echo 'Token has been preserved. Inspect: journalctl -u litehelm -n 40 --no-pager' >&2
@@ -137,3 +154,4 @@ sleep 2
 systemctl is-active --quiet litehelm.service || rollback
 systemctl enable litehelm.service
 printf '%s\n' 'LiteHelm is running at http://127.0.0.1:9091' 'Publish this local endpoint using your HTTPS reverse proxy.' 'Read the token locally: sudo cat /etc/litehelm/token' 'Existing token, unit and user drop-ins were preserved; managed openat2 compatibility setting installed.'
+if [ -e "$exec_conf" ]; then echo 'Script execution: enabled (disable with --disable-exec)'; else echo 'Script execution: disabled (enable with --enable-exec)'; fi

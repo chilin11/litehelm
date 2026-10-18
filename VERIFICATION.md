@@ -1,5 +1,14 @@
 # 已做检查与限制
 
+## v0.3.0 脚本任务
+
+- 服务端 Go 测试新增 9 组（默认关闭、退出码/中文 stderr/任务 ID 环境变量、shebang、取消整个进程组、超时、丢失、输入与路径校验、4 个并发上限与保留 30 条、UTF-8 分块边界、结果解析）；交叉编译后在 Debian 12 arm64 容器以 root 和普通用户分别运行通过。`golang:1.24` 容器内 `go test -race` 与 `go vet` 通过。
+- 真实 systemd（Debian 12 arm64 特权容器）：`--enable-exec` 安装后脚本以 root 在独立临时 unit 运行，可写 `/etc`、`/opt`（不受 LiteHelm 沙箱限制）；退出码 7 识别为失败；LiteHelm 重启期间任务继续并可增量读取输出；服务接口停止 `litehelm-job-*` 返回 403；取消显示 TERM；`RuntimeMaxSec` 超时识别为 timeout；普通重装保留开关，`--disable-exec` 后接口返回不支持。
+- 原有 `scripts/test-install.sh` 在同一 systemd 容器内通过，并已加入脚本任务检查（CI 运行于 Ubuntu amd64，本地以 arm64 验证）；ShellCheck 通过。
+- Android：`assembleDebug lintDebug` 通过，Lint 0 errors / 18 warnings（与改动前相同）；纯 JDK 检查 166 项通过（新增脚本大小、换行、状态、输出裁剪）。
+- 模拟器（API 36）通过 HTTPS 连接真实服务端联调：输入多行脚本 → 确认层预览 → 仅一次 POST → 实时增量输出 → 成功后停止轮询；运行中关闭页面后只剩首页 `/system` 轮询；取消确认、删除记录、编辑后重跑、列表顺序、简体中文文案均正常。测试 CA 与去除防截屏只存在于 scratch 临时构建。
+- 未验证：繁體中文与 200% 字体下脚本页的人工截图检查；目标服务器实机运行。
+
 ## v0.2.1 底部导航与多语言
 
 - 底部导航错位原因：竖向 LinearLayout 默认让文字标签占满整格宽度，文字靠左，图标居中。修正后在 1080×2400 截图中逐格测量图标与文字水平中心，偏差 ≤1.5 px（v0.2.0 同一测量为约 107 px 偏左）；English、简体中文、繁體中文以及 320dp / 200% 字体下均对齐，大字体时标签自动缩小以完整显示。

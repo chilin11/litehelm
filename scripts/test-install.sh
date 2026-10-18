@@ -8,8 +8,9 @@ tmp=$(mktemp -d)
 cleanup() {
  systemctl disable --now litehelm.service >/dev/null 2>&1 || true
  systemctl stop fixture-worker.timer fixture-worker.service >/dev/null 2>&1 || true
+ systemctl stop 'litehelm-job-*' >/dev/null 2>&1 || true
  rm -f /etc/systemd/system/litehelm.service /etc/systemd/system/fixture-worker.service /etc/systemd/system/fixture-worker.timer /usr/local/bin/litehelm
- rm -rf /etc/litehelm /etc/systemd/system/litehelm.service.d "$tmp"
+ rm -rf /etc/litehelm /etc/systemd/system/litehelm.service.d /var/lib/litehelm /etc/litehelm-exec-test "$tmp"
  systemctl daemon-reload
 }
 trap cleanup EXIT
@@ -108,6 +109,43 @@ except urllib.error.HTTPError as e:
 assert subprocess.run(['systemctl','is-active','--quiet','fixture-worker.service']).returncode!=0
 print('Tools ports/disks/timer whitelist/manual scan/cooldown: PASS')
 PY
+# Script jobs: opt-in, systemd transient units outside the management sandbox.
+sh "$base/install.sh" --local-dir "$base/dist" --enable-exec
+python3 - <<'PY'
+import json, time, subprocess, urllib.request, urllib.error
+from pathlib import Path
+token=Path('/etc/litehelm/token').read_text().strip()
+def req(path, body=None, expect=200):
+ data=json.dumps(body).encode() if body is not None else None
+ r=urllib.request.Request('http://127.0.0.1:9091/api/v1/'+path,data=data,headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'})
+ try:
+  with urllib.request.urlopen(r,timeout=20) as v: code,out=v.status,json.load(v)
+ except urllib.error.HTTPError as e: code,out=e.code,json.loads(e.read())
+ assert code==expect,(path,code,out)
+ return out
+def wait(i, limit=40):
+ end=time.time()+limit
+ while time.time()<end:
+  v=req('jobs/'+i)
+  if v['job']['state']!='running': return v
+  time.sleep(0.3)
+ raise AssertionError(v)
+assert req('system')['capabilities']['exec'] is True
+assert req('jobs')['runner']=='systemd'
+j=req('jobs',{'script':'#!/bin/sh\nset -eu\nwhoami\necho deployed > /etc/litehelm-exec-test\n'})['job']
+v=wait(j['id']); assert v['job']['state']=='succeeded' and v['output']=='root\n', v
+assert Path('/etc/litehelm-exec-test').read_text()=='deployed\n'
+j=req('jobs',{'script':'exit 7'})['job']; assert wait(j['id'])['job']['exit_code']==7
+j=req('jobs',{'script':'while true; do echo tick; sleep 0.2; done'})['job']; time.sleep(1)
+req('services/litehelm-job-'+j['id']+'.service/action',{'action':'stop'},expect=403)
+subprocess.run(['systemctl','restart','litehelm.service'],check=True); time.sleep(2)
+assert req('jobs/'+j['id'])['job']['state']=='running'
+req('jobs/'+j['id']+'/cancel',{}); assert wait(j['id'])['job']['state']=='cancelled'
+j=req('jobs',{'script':'sleep 120','timeout_seconds':10})['job']; assert wait(j['id'])['job']['state']=='timeout'
+print('Script jobs: root deploy outside sandbox, exit code, restart survival, cancel, timeout, protected unit: PASS')
+PY
+sh "$base/install.sh" --local-dir "$base/dist" --disable-exec
+[ ! -e /etc/systemd/system/litehelm.service.d/20-litehelm-exec.conf ]
 cp "$base/dist/litehelm-linux-amd64" "$tmp/litehelm-linux-amd64"
 printf '%064d  litehelm-linux-amd64\n' 0 > "$tmp/SHA256SUMS"
 if sh "$base/install.sh" --local-dir "$tmp"; then echo 'Accepted bad checksum'; exit 1; fi
