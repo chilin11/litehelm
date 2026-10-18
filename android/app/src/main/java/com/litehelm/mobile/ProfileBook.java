@@ -37,7 +37,7 @@ final class ProfileBook {
         JSONArray list=document.getJSONArray("profiles");
         for(int i=0;i<list.length();i++) {
             JSONObject j=list.getJSONObject(i);String id=j.getString("id"),name=j.getString("name");
-            if(id.isEmpty()||name.trim().isEmpty()||book.find(id)!=null)throw new Exception("主机配置格式异常");
+            if(id.isEmpty()||name.trim().isEmpty()||book.find(id)!=null)throw new Exception(Text.get(R.string.err_profile_format));
             Profile p=new Profile(id,name,ApiClient.validate(j.getString("origin"),j.getString("token")));
             JSONArray favorites=j.optJSONArray("favorites");
             if(favorites!=null)for(int k=0;k<favorites.length()&&p.favorites.size()<FAVORITE_LIMIT;k++) {

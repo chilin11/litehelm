@@ -39,6 +39,6 @@ final class CredentialStore {
         Cipher c=Cipher.getInstance("AES/GCM/NoPadding"); c.init(Cipher.ENCRYPT_MODE,key());
         byte[] data=c.doFinal(book.json().toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
         JSONObject envelope=new JSONObject().put("iv",Base64.encodeToString(c.getIV(),Base64.NO_WRAP)).put("data",Base64.encodeToString(data,Base64.NO_WRAP));
-        if(!context.getSharedPreferences("vault",Context.MODE_PRIVATE).edit().putString("encrypted",envelope.toString()).commit()) throw new Exception("无法保存加密凭据，请检查设备存储");
+        if(!context.getSharedPreferences("vault",Context.MODE_PRIVATE).edit().putString("encrypted",envelope.toString()).commit()) throw new Exception(Text.get(R.string.err_save_vault));
     }
 }

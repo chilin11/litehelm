@@ -61,8 +61,17 @@ public final class MainActivity extends Activity {
         ProfileBook book;
         volatile MainActivity owner;
     }
+    // Android 13+ stores the per-app language in the system; older versions use this override.
+    @Override protected void attachBaseContext(Context base) {
+        super.attachBaseContext(base);
+        if(Build.VERSION.SDK_INT<33) {
+            String tag=base.getSharedPreferences("ui",MODE_PRIVATE).getString("language","");
+            if(!tag.isEmpty()) { android.content.res.Configuration c=new android.content.res.Configuration(); c.setLocale(Locale.forLanguageTag(tag)); applyOverrideConfiguration(c); }
+        }
+    }
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
+        Text.use(this);
         getWindow().setNavigationBarColor(BG);
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         state=(State)getLastNonConfigurationInstance();
@@ -70,7 +79,7 @@ public final class MainActivity extends Activity {
         state.owner=this;
         vault=new CredentialStore(this);
         book=state.book;
-        if(book==null)try { book=vault.load(); } catch(Exception e) { notice="本机加密凭据不可用，请重新填写连接信息"; }
+        if(book==null)try { book=vault.load(); } catch(Exception e) { notice=t(R.string.vault_unavailable); }
         if(book==null)book=new ProfileBook();
         config=book.active()==null?null:book.active().config;
         editingId=state.draft?state.editingId:book.activeId;
@@ -122,7 +131,8 @@ public final class MainActivity extends Activity {
         b.setTextColor(primary?0xFF102D27:danger?RED:TEXT); b.setBackground(ripple(primary?(danger?RED:MINT):RAISED,12));
         b.setStateListAnimator(null); b.setOnClickListener(v->action.run()); return b;
     }
-    private Button compact(String title,Runnable action) { Button b=button(title,false,false,action); b.setContentDescription(title);return b; }
+    // Compact buttons grow with their label, so longer translations are never clipped.
+    private Button compact(String title,Runnable action) { Button b=button(title,false,false,action); b.setMinWidth(dp(64));b.setMinimumWidth(dp(64));b.setContentDescription(title);return b; }
     private void enabled(View v,boolean yes) { v.setEnabled(yes);v.setAlpha(yes?1f:.38f); }
     private LinearLayout panel() { LinearLayout p=column();p.setPadding(dp(20),dp(20),dp(20),dp(20));p.setBackground(shape(SURFACE,16,false)); return p; }
     private ScrollView scroll(LinearLayout child) { ScrollView s=new ScrollView(this);s.setFillViewport(true);s.setClipToPadding(false);s.addView(child,new ScrollView.LayoutParams(-1,-2));return s; }
@@ -130,7 +140,8 @@ public final class MainActivity extends Activity {
     private TextView message(LinearLayout target) { TextView t=text("",14,RED);t.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);t.setPadding(0,dp(12),0,dp(12));t.setVisibility(View.GONE);target.addView(t,new LinearLayout.LayoutParams(-1,-2));return t; }
     private void showMessage(TextView t,String msg,boolean error) { t.setText(msg);t.setTextColor(error?RED:SECONDARY);t.setVisibility(msg.isEmpty()?View.GONE:View.VISIBLE); }
     private void heading(LinearLayout p,String title,String subtitle,Button refresh) {
-        LinearLayout r=row();LinearLayout names=column();addText(names,title,24,TEXT);gap(names,6);addText(names,subtitle,12,SECONDARY);weight(r,names);if(refresh!=null)r.addView(refresh,new LinearLayout.LayoutParams(dp(64),-2));p.addView(r);gap(p,24);
+        // Large text stacks the action under the title so long words never break mid-word.
+        LinearLayout r=largeType()?column():row();LinearLayout names=column();addText(names,title,24,TEXT);gap(names,6);addText(names,subtitle,12,SECONDARY);if(largeType())r.addView(names,new LinearLayout.LayoutParams(-1,-2));else weight(r,names);if(refresh!=null){LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-2,-2);if(largeType())rp.topMargin=dp(12);r.addView(refresh,rp);}p.addView(r);gap(p,24);
     }
     private void buildShell() {
         root=column();root.setBackgroundColor(BG); root.setFitsSystemWindows(false);
@@ -139,18 +150,18 @@ public final class MainActivity extends Activity {
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE|View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN|View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
         chrome=row(); chrome.setPadding(dp(24),dp(12),dp(24),dp(12));
         Icon logo=new Icon(4,MINT);logo.setBackground(shape(0xFF17362F,8,false));chrome.addView(logo,new LinearLayout.LayoutParams(dp(32),dp(32)));
-        hostChoice=text("LiteHelm · 主机 ▾",15,TEXT);hostChoice.setMinHeight(dp(48));hostChoice.setGravity(Gravity.CENTER_VERTICAL);hostChoice.setOnClickListener(v->chooseHost());LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(0,-2,1);bp.leftMargin=dp(10);chrome.addView(hostChoice,bp);
-        connection=text("未连接",12,MUTED);chrome.addView(connection);root.addView(chrome,new LinearLayout.LayoutParams(-1,-2));
+        hostChoice=text(t(R.string.host_choice,t(R.string.host)),15,TEXT);hostChoice.setSingleLine(true);hostChoice.setEllipsize(TextUtils.TruncateAt.END);hostChoice.setMinHeight(dp(48));hostChoice.setGravity(Gravity.CENTER_VERTICAL);hostChoice.setOnClickListener(v->chooseHost());LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(0,-2,1);bp.leftMargin=dp(10);chrome.addView(hostChoice,bp);
+        connection=text(t(R.string.not_connected),12,MUTED);chrome.addView(connection);root.addView(chrome,new LinearLayout.LayoutParams(-1,-2));
         View topLine=new View(this);topLine.setBackgroundColor(LINE);root.addView(topLine,new LinearLayout.LayoutParams(-1,dp(1)));
         FrameLayout center=new FrameLayout(this);content=new FrameLayout(this);FrameLayout.LayoutParams cp=new FrameLayout.LayoutParams(Math.min(dp(600),getResources().getDisplayMetrics().widthPixels),-1,Gravity.CENTER_HORIZONTAL);center.addView(content,cp);root.addView(center,new LinearLayout.LayoutParams(-1,0,1));
         View bottomLine=new View(this);bottomLine.setBackgroundColor(LINE);root.addView(bottomLine,new LinearLayout.LayoutParams(-1,dp(1)));
-        nav=row();String[] titles={"概览","进程","服务","设置"};
-        for(int i=0;i<4;i++) { final int index=i;LinearLayout item=column();item.setGravity(Gravity.CENTER);item.setPadding(0,dp(5),0,dp(5));item.setBackground(ripple(BG,0));navIcons[i]=new Icon(i,MUTED);item.addView(navIcons[i],new LinearLayout.LayoutParams(dp(44),dp(28)));navLabels[i]=text(titles[i],11,MUTED);gap(item,4);item.addView(navLabels[i]);item.setOnClickListener(v->switchPage(index,true));item.setContentDescription(titles[i]);item.setMinimumHeight(dp(64));nav.addView(item,new LinearLayout.LayoutParams(0,-2,1)); }
+        nav=row();String[] titles={t(R.string.nav_overview),t(R.string.nav_processes),t(R.string.nav_services),t(R.string.nav_settings)};
+        for(int i=0;i<4;i++) { final int index=i;LinearLayout item=column();item.setGravity(Gravity.CENTER);item.setPadding(0,dp(5),0,dp(5));item.setBackground(ripple(BG,0));navIcons[i]=new Icon(i,MUTED);item.addView(navIcons[i],new LinearLayout.LayoutParams(dp(44),dp(28)));navLabels[i]=text(titles[i],11,MUTED);navLabels[i].setGravity(Gravity.CENTER);navLabels[i].setMaxLines(1);navLabels[i].setAutoSizeTextTypeUniformWithConfiguration(7,11,1,android.util.TypedValue.COMPLEX_UNIT_SP);gap(item,4);item.addView(navLabels[i],new LinearLayout.LayoutParams(-1,navLabels[i].getLineHeight()));item.setOnClickListener(v->switchPage(index,true));item.setContentDescription(titles[i]);item.setMinimumHeight(dp(64));nav.addView(item,new LinearLayout.LayoutParams(0,-2,1)); }
         root.addView(nav,new LinearLayout.LayoutParams(-1,-2));setContentView(root);root.requestApplyInsets();
         buildDashboard();buildProcesses();buildServices();buildSettings();
     }
     private void switchPage(int next,boolean loadNow) {
-        if(next!=3 && config==null) { toast("请先连接你的服务器");next=3; }
+        if(next!=3 && config==null) { toast(t(R.string.connect_first));next=3; }
         if(pages[page] instanceof ScrollView)scrollY[page]=((ScrollView)pages[page]).getScrollY();
         if(sheet!=null)sheet.dismiss();api.cancelRead();loadPending=false;
         generation++;handler.removeCallbacks(poll);resetRates();page=next;
@@ -158,36 +169,36 @@ public final class MainActivity extends Activity {
         if(page==3)getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
         if(pages[page] instanceof ScrollView) {final int position=scrollY[page];final ScrollView current=(ScrollView)pages[page];current.post(()->current.scrollTo(0,position));}
         ((InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(root.getWindowToken(),0);
-        if(page==3 && config!=null){LinearLayout title=(LinearLayout)settings.getChildAt(0);LinearLayout labels=(LinearLayout)title.getChildAt(0);((TextView)labels.getChildAt(0)).setText("设置");((TextView)labels.getChildAt(2)).setText("连接与主机控制");}
+        if(page==3 && config!=null){LinearLayout title=(LinearLayout)settings.getChildAt(0);LinearLayout labels=(LinearLayout)title.getChildAt(0);((TextView)labels.getChildAt(0)).setText(t(R.string.nav_settings));((TextView)labels.getChildAt(2)).setText(t(R.string.settings_subtitle));}
         if(page==0)updateDashboard(); if(page==3)updatePower();
         if(loadNow && foreground && config!=null)loadCurrent();
     }
     private void attachPage(int index,View v) {pages[index]=v;content.addView(v,new FrameLayout.LayoutParams(-1,-1));v.setVisibility(View.GONE);}
-    private void status(boolean ok) {connected=ok;connection.setText(ok?"● 已连接":"● 连接失败");connection.setTextColor(ok?MINT:RED);updateControls();}
+    private void status(boolean ok) {connected=ok;connection.setText(ok?t(R.string.status_connected):t(R.string.status_failed));connection.setTextColor(ok?MINT:RED);updateControls();}
     private void updateControls() {
         if(dashRefresh!=null)enabled(dashRefresh,!busy && config!=null);if(processRefresh!=null)enabled(processRefresh,!busy && config!=null);if(serviceRefresh!=null)enabled(serviceRefresh,!busy && config!=null);
-        if(saveButton!=null) {enabled(saveButton,!busy && !ApiClient.MUTATING.get());saveButton.setText(validating?"正在验证…":"保存并连接");}
+        if(saveButton!=null) {enabled(saveButton,!busy && !ApiClient.MUTATING.get());saveButton.setText(validating?t(R.string.validating):t(R.string.save_connect));}
         if(powerArea!=null && page==3)updatePower();
     }
     private interface Result {void accept(JSONObject data) throws Exception;}
     private void read(ApiClient.Config credentials,String path,boolean saving,Result success,java.util.function.Consumer<String> failure) {
-        if(busy || ApiClient.MUTATING.get()) {loadPending=true;return;}busy=true; final int gen=generation; final int requestPage=page;updateControls();connection.setText("● 连接中");connection.setTextColor(WARN);
+        if(busy || ApiClient.MUTATING.get()) {loadPending=true;return;}busy=true; final int gen=generation; final int requestPage=page;updateControls();connection.setText(t(R.string.status_connecting));connection.setTextColor(WARN);
         final int requestSheet=sheetGeneration;final boolean inSheet=sheet!=null;final ApiClient.Config identity=config;
-        ApiClient.IO.execute(()->{JSONObject value=null;String error=null;try {if(!RequestPolicy.current(foreground,generation,gen,config,identity,inSheet,sheetGeneration,requestSheet))throw new Exception("请求已取消");value=api.request(credentials,path,null,()->RequestPolicy.current(foreground,generation,gen,config,identity,inSheet,sheetGeneration,requestSheet));validatePayload(path,value);}catch(Exception e){error=e.getMessage()==null?"请求失败":ApiClient.redact(e.getMessage(),credentials);}final JSONObject result=value;final String problem=error;
+        ApiClient.IO.execute(()->{JSONObject value=null;String error=null;try {if(!RequestPolicy.current(foreground,generation,gen,config,identity,inSheet,sheetGeneration,requestSheet))throw new Exception(t(R.string.request_cancelled));value=api.request(credentials,path,null,()->RequestPolicy.current(foreground,generation,gen,config,identity,inSheet,sheetGeneration,requestSheet));validatePayload(path,value);}catch(Exception e){error=e.getMessage()==null?t(R.string.request_failed):ApiClient.redact(e.getMessage(),credentials);}final JSONObject result=value;final String problem=error;
             handler.post(()->{busy=false;validating=false;if(destroyed)return;
                 boolean current=requestPage==page && RequestPolicy.current(foreground,generation,gen,config,identity,inSheet,sheetGeneration,requestSheet);
                 if(saving)for(EditText field:new EditText[]{nameInput,addressInput,tokenInput})enabled(field,true);
                 // Commit the small encrypted preference and active config in one main-loop turn;
                 // rotation/navigation cannot interleave a persisted connection with the old owner.
-                if(current) {if(problem==null) {try {status(true);success.accept(result);}catch(Exception e){status(false);failure.accept(saving?"无法保存连接，请重试":"服务器数据格式异常，请检查 API 版本");}} else {status(false);failure.accept(problem);}}
-                else if(saving)showMessage(settingsError,"连接验证已取消，草稿已保留",false);
-                if(!current && !saving && foreground){connection.setText(connected?"● 已连接":"● 未连接");connection.setTextColor(connected?MINT:MUTED);}
+                if(current) {if(problem==null) {try {status(true);success.accept(result);}catch(Exception e){status(false);failure.accept(saving?t(R.string.err_save_connection):t(R.string.err_data_format));}} else {status(false);failure.accept(problem);}}
+                else if(saving)showMessage(settingsError,t(R.string.validation_cancelled),false);
+                if(!current && !saving && foreground){connection.setText(connected?t(R.string.status_connected):t(R.string.status_disconnected));connection.setTextColor(connected?MINT:MUTED);}
                 updateControls();if(loadPending && foreground){loadPending=false;loadCurrent();}else schedulePoll();
             });
         });
     }
     private static void validatePayload(String path,JSONObject j) throws Exception {
-        if(path.equals("/api/v1/system")) {if(j.optString("hostname").isEmpty() || j.optJSONObject("capabilities")==null || !j.has("timestamp"))throw new Exception("服务器主机信息格式不完整");}
+        if(path.equals("/api/v1/system")) {if(j.optString("hostname").isEmpty() || j.optJSONObject("capabilities")==null || !j.has("timestamp"))throw new Exception(t(R.string.err_host_info));}
         else if(path.startsWith("/api/v1/processes?"))j.getJSONArray("processes");
         else if(path.equals("/api/v1/services")) {j.getJSONArray("services");j.getBoolean("supported");}
         else if(path.endsWith("/logs"))j.getString("logs");
@@ -199,7 +210,7 @@ public final class MainActivity extends Activity {
         handler.removeCallbacks(poll);
         if(page==0 || page==3 || system==null || !systemFresh) {
             final int intended=page;
-            if(page==0 && system==null)showMessage(dashMessage,"正在获取主机信息…",false);
+            if(page==0 && system==null)showMessage(dashMessage,t(R.string.loading_host),false);
             read(config,"/api/v1/system",false,j->{system=j;systemFresh=true;networkSample=intended==0;lastSystemSuccess=System.currentTimeMillis();systemError="";updateDashboard();updatePower();if(intended==1 || intended==2)loadCurrent();},e->{systemFresh=false;systemError=e;resetRates();updateDashboard();if(intended==3)showMessage(settingsError,e,true);else if(intended==1)showMessage(processMessage,e,true);else if(intended==2)showMessage(serviceMessage,e,true);updatePower();});
         } else if(page==1)loadProcesses();else if(page==2)loadServices();
     }
@@ -207,112 +218,112 @@ public final class MainActivity extends Activity {
     private void resetRates(){rxBase=txBase=timeBase=-1;networkSample=false;if(rx!=null) {rx.setText("—");tx.setText("—");}}
 
     private void buildDashboard() {
-        dashboard=pageColumn();dashRefresh=compact("刷新",()->loadCurrent());
-        LinearLayout top=row();LinearLayout names=column();names.addView(label("当前主机"));gap(names,6);hostname=text("等待连接",24,TEXT);names.addView(hostname);gap(names,6);os=text("轻量服务器管家",12,SECONDARY);names.addView(os);weight(top,names);top.addView(dashRefresh,new LinearLayout.LayoutParams(dp(64),-2));dashboard.addView(top);
+        dashboard=pageColumn();dashRefresh=compact(t(R.string.refresh),()->loadCurrent());
+        LinearLayout top=largeType()?column():row();LinearLayout names=column();names.addView(label(t(R.string.current_host)));gap(names,6);hostname=text(t(R.string.waiting_connection),24,TEXT);names.addView(hostname);gap(names,6);os=text(t(R.string.tagline),12,SECONDARY);names.addView(os);if(largeType())top.addView(names,new LinearLayout.LayoutParams(-1,-2));else weight(top,names);LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-2,-2);if(largeType())rp.topMargin=dp(12);top.addView(dashRefresh,rp);dashboard.addView(top);
         dashMessage=message(dashboard);
-        dashboard.addView(compact("切换主机",()->chooseHost()),new LinearLayout.LayoutParams(-1,-2));
-        dashboard.addView(compact("主机工具",()->toolMenu()),new LinearLayout.LayoutParams(-1,-2));
+        gap(dashboard,16);dashboard.addView(compact(t(R.string.switch_host),()->chooseHost()),new LinearLayout.LayoutParams(-1,-2));
+        gap(dashboard,8);dashboard.addView(compact(t(R.string.host_tools),()->toolMenu()),new LinearLayout.LayoutParams(-1,-2));
         favoritesArea=column();dashboard.addView(favoritesArea);renderFavorites();
-        LinearLayout help=row();help.addView(compact("重试",()->loadCurrent()),new LinearLayout.LayoutParams(0,-2,1));Button check=compact("检查连接",()->switchPage(3,true));LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(0,-2,1);hp.leftMargin=dp(8);help.addView(check,hp);help.setTag("errorHelp");dashboard.addView(help);help.setVisibility(View.GONE);
-        dashboardData=column();gap(dashboardData,24);LinearLayout up=row();weight(up,label("连续运行"));uptime=text("—",14,TEXT);up.addView(uptime);dashboardData.addView(up);gap(dashboardData,24);
-        LinearLayout resource=panel();TextView resourceTitle=label("资源");resourceTitle.setTag("cores");resource.addView(resourceTitle);gap(resource,14);
+        LinearLayout help=row();help.addView(compact(t(R.string.retry),()->loadCurrent()),new LinearLayout.LayoutParams(0,-2,1));Button check=compact(t(R.string.check_connection),()->switchPage(3,true));LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(0,-2,1);hp.leftMargin=dp(8);help.addView(check,hp);help.setTag("errorHelp");dashboard.addView(help);help.setVisibility(View.GONE);
+        dashboardData=column();gap(dashboardData,24);LinearLayout up=row();weight(up,label(t(R.string.uptime)));uptime=text("—",14,TEXT);up.addView(uptime);dashboardData.addView(up);gap(dashboardData,24);
+        LinearLayout resource=panel();TextView resourceTitle=label(t(R.string.resources));resourceTitle.setTag("cores");resource.addView(resourceTitle);gap(resource,14);
         LinearLayout cpuRow=column();LinearLayout cpuCol=column();addText(cpuCol,"CPU",12,SECONDARY);gap(cpuCol,4);cpu=text("—",48,MINT);cpuCol.addView(cpu);cpuRow.addView(cpuCol);
-        load=text("负载 —\n1 / 5 / 15 分钟",12,SECONDARY);gap(cpuRow,10);cpuRow.addView(load);resource.addView(cpuRow);gap(resource,12);cpuMeter=new Meter(MINT,"CPU");resource.addView(cpuMeter,new LinearLayout.LayoutParams(-1,dp(3)));divider(resource);
-        LinearLayout pair=largeType()?column():row();LinearLayout mem=column();mem.addView(label("内存"));gap(mem,8);memory=text("—",28,CYAN);mem.addView(memory);gap(mem,8);memoryBytes=text("暂不可用",12,SECONDARY);mem.addView(memoryBytes);gap(mem,12);memMeter=new Meter(CYAN,"内存");mem.addView(memMeter,new LinearLayout.LayoutParams(-1,dp(3)));
-        LinearLayout disc=column();disc.addView(label("磁盘"));gap(disc,8);disk=text("—",28,MINT);disc.addView(disk);gap(disc,8);diskBytes=text("暂不可用",12,SECONDARY);disc.addView(diskBytes);gap(disc,12);diskMeter=new Meter(MINT,"磁盘");disc.addView(diskMeter,new LinearLayout.LayoutParams(-1,dp(3)));
+        load=text(t(R.string.load_value,"—"),12,SECONDARY);gap(cpuRow,10);cpuRow.addView(load);resource.addView(cpuRow);gap(resource,12);cpuMeter=new Meter(MINT,"CPU");resource.addView(cpuMeter,new LinearLayout.LayoutParams(-1,dp(3)));divider(resource);
+        LinearLayout pair=largeType()?column():row();LinearLayout mem=column();mem.addView(label(t(R.string.memory)));gap(mem,8);memory=text("—",28,CYAN);mem.addView(memory);gap(mem,8);memoryBytes=text(t(R.string.unavailable_now),12,SECONDARY);mem.addView(memoryBytes);gap(mem,12);memMeter=new Meter(CYAN,t(R.string.memory));mem.addView(memMeter,new LinearLayout.LayoutParams(-1,dp(3)));
+        LinearLayout disc=column();disc.addView(label(t(R.string.disk)));gap(disc,8);disk=text("—",28,MINT);disc.addView(disk);gap(disc,8);diskBytes=text(t(R.string.unavailable_now),12,SECONDARY);disc.addView(diskBytes);gap(disc,12);diskMeter=new Meter(MINT,t(R.string.disk));disc.addView(diskMeter,new LinearLayout.LayoutParams(-1,dp(3)));
         if(largeType()){pair.addView(mem);gap(pair,24);pair.addView(disc);}else {weight(pair,mem);View spacer=new View(this);pair.addView(spacer,new LinearLayout.LayoutParams(dp(20),1));weight(pair,disc);}resource.addView(pair);divider(resource);swap=text("Swap   —",12,SECONDARY);resource.addView(swap);dashboardData.addView(resource);gap(dashboardData,28);
-        LinearLayout networkHeading=row();weight(networkHeading,text("网络速率",15,TEXT));networkHeading.addView(text("当前采样",11,MUTED));dashboardData.addView(networkHeading);gap(dashboardData,20);
-        LinearLayout network=largeType()?column():row();LinearLayout receive=column();addText(receive,"↓ 接收",12,SECONDARY);gap(receive,8);rx=text("—",28,CYAN);receive.addView(rx);LinearLayout send=column();addText(send,"↑ 发送",12,SECONDARY);gap(send,8);tx=text("—",28,TEXT);send.addView(tx);
-        if(largeType()){network.addView(receive);gap(network,20);network.addView(send);}else{weight(network,receive);View line=new View(this);line.setBackgroundColor(LINE);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(dp(1),dp(60));lp.leftMargin=dp(16);lp.rightMargin=dp(20);network.addView(line,lp);weight(network,send);}dashboardData.addView(network);gap(dashboardData,14);counters=text("等待下一次采样",11,MUTED);dashboardData.addView(counters);gap(dashboardData,28);addText(dashboardData,"●  前台每 5 秒刷新",12,SECONDARY);gap(dashboardData,8);dashStamp=text("尚未更新",11,MUTED);dashboardData.addView(dashStamp);dashboard.addView(dashboardData);attachPage(0,scroll(dashboard));updateDashboard();
+        LinearLayout networkHeading=row();weight(networkHeading,text(t(R.string.network_rate),15,TEXT));networkHeading.addView(text(t(R.string.current_sample),11,MUTED));dashboardData.addView(networkHeading);gap(dashboardData,20);
+        LinearLayout network=largeType()?column():row();LinearLayout receive=column();addText(receive,t(R.string.receive),12,SECONDARY);gap(receive,8);rx=text("—",28,CYAN);receive.addView(rx);LinearLayout send=column();addText(send,t(R.string.send),12,SECONDARY);gap(send,8);tx=text("—",28,TEXT);send.addView(tx);
+        if(largeType()){network.addView(receive);gap(network,20);network.addView(send);}else{weight(network,receive);View line=new View(this);line.setBackgroundColor(LINE);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(dp(1),dp(60));lp.leftMargin=dp(16);lp.rightMargin=dp(20);network.addView(line,lp);weight(network,send);}dashboardData.addView(network);gap(dashboardData,14);counters=text(t(R.string.waiting_sample),11,MUTED);dashboardData.addView(counters);gap(dashboardData,28);addText(dashboardData,t(R.string.refresh_note),12,SECONDARY);gap(dashboardData,8);dashStamp=text(t(R.string.not_updated),11,MUTED);dashboardData.addView(dashStamp);dashboard.addView(dashboardData);attachPage(0,scroll(dashboard));updateDashboard();
     }
     private void updateDashboard() {
         if(hostname==null)return;dashboardData.setVisibility(system==null?View.GONE:View.VISIBLE);
         View help=dashboard.findViewWithTag("errorHelp");help.setVisibility(systemError.isEmpty()?View.GONE:View.VISIBLE);
-        if(system==null){hostname.setText(config==null?"连接你的服务器":"等待主机信息");showMessage(dashMessage,systemError.isEmpty()?"正在获取主机信息…":"无法连接服务器\n"+systemError,true);return;}
-        showMessage(dashMessage,systemError.isEmpty()?"":systemError+"\n数据已过期 · 上次尝试 "+clock(System.currentTimeMillis()),true);
+        if(system==null){hostname.setText(config==null?t(R.string.connect_server):t(R.string.waiting_host));showMessage(dashMessage,systemError.isEmpty()?t(R.string.loading_host):t(R.string.cannot_connect,systemError),true);return;}
+        showMessage(dashMessage,systemError.isEmpty()?"":t(R.string.stale_last_attempt,systemError,clock(System.currentTimeMillis())),true);
         hostname.setText(system.optString("hostname","—"));os.setText(system.optString("os","—")+" · "+system.optString("arch","—"));uptime.setText(duration(number(system,"uptime_seconds")));
-        TextView cores=dashboard.findViewWithTag("cores");cores.setText("资源 / "+(system.has("cpu_cores")?system.optInt("cpu_cores")+" 核":"核数暂不可用"));
+        TextView cores=dashboard.findViewWithTag("cores");cores.setText(system.has("cpu_cores")?Text.plural(R.plurals.resources_cores,system.optInt("cpu_cores"),system.optInt("cpu_cores")):t(R.string.resources_cores_unknown));
         double cpuValue=number(system,"cpu_percent");cpu.setText(percent(cpuValue));cpuMeter.set(cpuValue);
-        JSONArray loads=system.optJSONArray("load");load.setText("负载 "+(loads!=null&&loads.length()>=3?decimal(loads.optDouble(0,Double.NaN))+" / "+decimal(loads.optDouble(1,Double.NaN))+" / "+decimal(loads.optDouble(2,Double.NaN)):"—")+"\n1 / 5 / 15 分钟");
+        JSONArray loads=system.optJSONArray("load");load.setText(t(R.string.load_value,loads!=null&&loads.length()>=3?decimal(loads.optDouble(0,Double.NaN))+" / "+decimal(loads.optDouble(1,Double.NaN))+" / "+decimal(loads.optDouble(2,Double.NaN)):"—"));
         resource(system.optJSONObject("memory"),memory,memoryBytes,memMeter);resource(system.optJSONObject("disk"),disk,diskBytes,diskMeter);
-        JSONObject sw=system.optJSONObject("swap");double st=number(sw,"total");swap.setText("Swap   "+(st==0?"未启用":bytes(number(sw,"used"))+" / "+bytes(st)));
+        JSONObject sw=system.optJSONObject("swap");double st=number(sw,"total");swap.setText("Swap   "+(st==0?t(R.string.swap_off):bytes(number(sw,"used"))+" / "+bytes(st)));
         if(networkSample){
             JSONObject net=system.optJSONObject("network");long timestamp=system.optLong("timestamp",-1);long nr=net==null?-1:net.optLong("rx_bytes",-1), nt=net==null?-1:net.optLong("tx_bytes",-1);
             boolean valid=timestamp>timeBase && timeBase>=0 && nr>=rxBase && nt>=txBase && rxBase>=0 && txBase>=0 && systemFresh;
             if(valid){rx.setText(bytes((nr-rxBase)/(double)(timestamp-timeBase))+"/s");tx.setText(bytes((nt-txBase)/(double)(timestamp-timeBase))+"/s");}else {rx.setText("—");tx.setText("—");}
-            counters.setText((valid?"":"等待下一次采样 · ")+"累计接收 "+bytes(nr)+" / 发送 "+bytes(nt));
+            counters.setText((valid?"":t(R.string.waiting_sample)+" · ")+t(R.string.totals,bytes(nr),bytes(nt)));
             if(systemFresh && page==0 && foreground && timestamp>0 && nr>=0 && nt>=0){rxBase=nr;txBase=nt;timeBase=timestamp;}else resetRates();
             networkSample=false;
         }
-        dashStamp.setText((systemFresh?"更新于 ":"数据已过期 · 上次成功 ")+clock(lastSystemSuccess));dashStamp.setTextColor(systemFresh?MUTED:WARN);dashboardData.setAlpha(systemFresh?1f:.58f);
+        dashStamp.setText(t(systemFresh?R.string.updated_at:R.string.stale_last_success,clock(lastSystemSuccess)));dashStamp.setTextColor(systemFresh?MUTED:WARN);dashboardData.setAlpha(systemFresh?1f:.58f);
     }
-    private void resource(JSONObject source,TextView value,TextView detail,Meter meter){double total=number(source,"total"),used=number(source,"used");double ratio=total>0&&used>=0?100*used/total:Double.NaN;value.setText(percent(ratio));detail.setText(Double.isFinite(ratio)?bytes(used)+" / "+bytes(total):"暂不可用");meter.set(ratio);}
+    private void resource(JSONObject source,TextView value,TextView detail,Meter meter){double total=number(source,"total"),used=number(source,"used");double ratio=total>0&&used>=0?100*used/total:Double.NaN;value.setText(percent(ratio));detail.setText(Double.isFinite(ratio)?bytes(used)+" / "+bytes(total):t(R.string.unavailable_now));meter.set(ratio);}
     private static double number(JSONObject j,String key){return j==null?Double.NaN:j.optDouble(key,Double.NaN);}
     private static String decimal(double x){return Double.isFinite(x)?String.format(Locale.CHINA,"%.2f",x):"—";}
     private static String percent(double x){return Double.isFinite(x)&&x>=0?String.format(Locale.CHINA,"%.1f\u00a0%%",x):"—";}
     private static String bytes(double x){if(!Double.isFinite(x)||x<0)return "—";String[] units={"B","KiB","MiB","GiB","TiB"};int index=0;while(x>=1024 && index<4){x/=1024;index++;}return String.format(Locale.CHINA,index==0?"%.0f\u00a0%s":"%.1f\u00a0%s",x,units[index]);}
     private static String clock(long t){return t<=0?"—":new SimpleDateFormat("HH:mm:ss",Locale.CHINA).format(new Date(t));}
-    private static String duration(double seconds){if(!Double.isFinite(seconds)||seconds<0)return "—";long m=(long)seconds/60,h=m/60,d=h/24;return d>0?d+"天 "+h%24+"小时":h>0?h+"小时 "+m%60+"分":m>0?m+"分钟":"不足 1 分钟";}
+    private static String duration(double seconds){if(!Double.isFinite(seconds)||seconds<0)return "—";long m=(long)seconds/60,h=m/60,d=h/24;return d>0?t(R.string.duration_dh,d,h%24):h>0?t(R.string.duration_hm,h,m%60):m>0?t(R.string.duration_m,m):t(R.string.duration_lt1);}
 
     private void buildProcesses() {
-        LinearLayout outer=column(), header=pageColumn();processHeader=header;header.setPadding(0,dp(20),0,dp(8));processRefresh=compact("刷新",()->{processList.setSelection(0);loadCurrent();});heading(header,"进程","内存占用前 100 项",processRefresh);((LinearLayout)((LinearLayout)header.getChildAt(0)).getChildAt(0)).getChildAt(2).setTag("processSubtitle");
-        LinearLayout sort=row();Button mem=compact("内存",()->setSort(false)), cp=compact("CPU 平均",()->setSort(true));sort.addView(mem,new LinearLayout.LayoutParams(0,-2,1));LinearLayout.LayoutParams sp=new LinearLayout.LayoutParams(0,-2,1);sp.leftMargin=dp(8);sort.addView(cp,sp);mem.setTag("sortMem");cp.setTag("sortCpu");header.addView(sort);gap(header,12);
-        processSearch=search("搜索进程名称、PID 或用户",processQuery,q->{processQuery=q;filterProcesses();});header.addView(searchRow(processSearch));gap(header,12);addText(header,"CPU 为进程运行期间平均值",12,MUTED);processMessage=message(header);
+        LinearLayout outer=column(), header=pageColumn();processHeader=header;header.setPadding(0,dp(20),0,dp(8));processRefresh=compact(t(R.string.refresh),()->{processList.setSelection(0);loadCurrent();});heading(header,t(R.string.nav_processes),t(R.string.top_memory),processRefresh);((LinearLayout)((LinearLayout)header.getChildAt(0)).getChildAt(0)).getChildAt(2).setTag("processSubtitle");
+        LinearLayout sort=row();Button mem=compact(t(R.string.memory),()->setSort(false)), cp=compact(t(R.string.cpu_average),()->setSort(true));sort.addView(mem,new LinearLayout.LayoutParams(0,-2,1));LinearLayout.LayoutParams sp=new LinearLayout.LayoutParams(0,-2,1);sp.leftMargin=dp(8);sort.addView(cp,sp);mem.setTag("sortMem");cp.setTag("sortCpu");header.addView(sort);gap(header,12);
+        processSearch=search(t(R.string.search_processes),processQuery,q->{processQuery=q;filterProcesses();});header.addView(searchRow(processSearch));gap(header,12);addText(header,t(R.string.cpu_note),12,MUTED);processMessage=message(header);
         processList=new ListView(this);processList.setDivider(new android.graphics.drawable.ColorDrawable(LINE));processList.setDividerHeight(dp(1));processList.setCacheColorHint(BG);processList.setClipToPadding(false);processList.setPadding(dp(24),0,dp(24),dp(20));processList.addHeaderView(header,null,false);processAdapter=new DataAdapter(false);processList.setAdapter(processAdapter);processList.setOnItemClickListener((p,v,pos,id)->{int index=pos-processList.getHeaderViewsCount();if(index>=0&&index<processAdapter.items.size())processSheet(processAdapter.items.get(index));});outer.addView(processList,new LinearLayout.LayoutParams(-1,0,1));attachPage(1,outer);paintSort();
     }
     private EditText search(String hint,String value,java.util.function.Consumer<String> change){EditText input=input(hint,false);input.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);input.setText(value);watch(input,()->change.accept(input.getText().toString()));return input;}
-    private View searchRow(EditText input){LinearLayout r=row();weight(r,input);Button clear=compact("清除",()->input.setText(""));clear.setContentDescription("清除搜索");LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(dp(64),-2);p.leftMargin=dp(8);r.addView(clear,p);return r;}
+    private View searchRow(EditText input){LinearLayout r=row();weight(r,input);Button clear=compact(t(R.string.clear),()->input.setText(""));clear.setContentDescription(t(R.string.clear_search));LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-2,-2);p.leftMargin=dp(8);r.addView(clear,p);return r;}
     private void setSort(boolean cpu){if(busy)return;processCpu=cpu;processesFresh=false;processes.clear();filterProcesses();paintSort();if(foreground&&page==1)loadCurrent();}
-    private void paintSort(){View h=processHeader;if(h==null)return;Button a=h.findViewWithTag("sortMem"),b=h.findViewWithTag("sortCpu");a.setTextColor(processCpu?SECONDARY:MINT);b.setTextColor(processCpu?MINT:SECONDARY);TextView subtitle=h.findViewWithTag("processSubtitle");if(subtitle!=null)subtitle.setText(processCpu?"CPU 平均占用前 100 项":"内存占用前 100 项");}
-    private void loadProcesses(){showMessage(processMessage,"正在获取进程…",false);read(config,"/api/v1/processes?limit=100"+(processCpu?"&sort=cpu":""),false,j->{processes.clear();JSONArray list=j.getJSONArray("processes");for(int i=0;i<Math.min(100,list.length());i++)processes.add(list.getJSONObject(i));processesFresh=true;filterProcesses();},e->{processesFresh=false;showMessage(processMessage,e+(processes.isEmpty()?"":" · 数据已过期，请刷新后操作"),true);});}
-    private void filterProcesses(){if(processAdapter==null)return;ArrayList<JSONObject> result=new ArrayList<>();String query=processQuery.toLowerCase(Locale.ROOT).trim();for(JSONObject p:processes)if((p.optString("name")+" "+p.optString("pid")+" "+p.optString("user")).toLowerCase(Locale.ROOT).contains(query))result.add(p);processAdapter.set(result);if(processesFresh)showMessage(processMessage,result.isEmpty()?(query.isEmpty()?"暂无进程":"没有匹配的进程 · 清空搜索可查看全部"):"",false);}
-    private String processBlock(JSONObject p){if(!processesFresh||!systemFresh||!connected)return "列表或连接已过期，请刷新后操作";if(!capability("process_signal"))return "服务器未开放进程控制权限";if(p.optInt("pid",0)<=1)return "此进程受保护";if(p.isNull("start_time")||p.optString("start_time").isEmpty())return "缺少启动标识，请刷新列表";return "";}
+    private void paintSort(){View h=processHeader;if(h==null)return;Button a=h.findViewWithTag("sortMem"),b=h.findViewWithTag("sortCpu");a.setTextColor(processCpu?SECONDARY:MINT);b.setTextColor(processCpu?MINT:SECONDARY);TextView subtitle=h.findViewWithTag("processSubtitle");if(subtitle!=null)subtitle.setText(processCpu?t(R.string.top_cpu):t(R.string.top_memory));}
+    private void loadProcesses(){showMessage(processMessage,t(R.string.loading_processes),false);read(config,"/api/v1/processes?limit=100"+(processCpu?"&sort=cpu":""),false,j->{processes.clear();JSONArray list=j.getJSONArray("processes");for(int i=0;i<Math.min(100,list.length());i++)processes.add(list.getJSONObject(i));processesFresh=true;filterProcesses();},e->{processesFresh=false;showMessage(processMessage,(processes.isEmpty()?e:t(R.string.error_stale,e)),true);});}
+    private void filterProcesses(){if(processAdapter==null)return;ArrayList<JSONObject> result=new ArrayList<>();String query=processQuery.toLowerCase(Locale.ROOT).trim();for(JSONObject p:processes)if((p.optString("name")+" "+p.optString("pid")+" "+p.optString("user")).toLowerCase(Locale.ROOT).contains(query))result.add(p);processAdapter.set(result);if(processesFresh)showMessage(processMessage,result.isEmpty()?(query.isEmpty()?t(R.string.no_processes):t(R.string.no_matching_processes)):"",false);}
+    private String processBlock(JSONObject p){if(!processesFresh||!systemFresh||!connected)return t(R.string.stale_list);if(!capability("process_signal"))return t(R.string.no_process_control);if(p.optInt("pid",0)<=1)return t(R.string.process_protected);if(p.isNull("start_time")||p.optString("start_time").isEmpty())return t(R.string.missing_start);return "";}
     private void processSheet(JSONObject p){
-        LinearLayout box=sheetBox(p.optString("name","进程"));addText(box,"PID "+p.optInt("pid")+" · "+p.optString("user")+" · "+p.optString("state"),14,SECONDARY);gap(box,8);String start=p.optString("start_time");addText(box,"启动标识 "+(start.length()>24?start.substring(0,24)+"…":start),12,MUTED);gap(box,24);
-        addText(box,"主机 · "+hostLabel(),14,MINT);gap(box,12);
-        RadioGroup choices=new RadioGroup(this);int termId=View.generateViewId(),killId=View.generateViewId();RadioButton term=radio("正常终止 · TERM\n请求进程正常退出",termId),kill=radio("强制结束 · KILL\n立即结束，可能丢失未保存的数据",killId);choices.addView(term);choices.addView(kill);choices.check(termId);box.addView(choices);gap(box,16);TextView error=message(box);String blocked=processBlock(p);showMessage(error,blocked,true);
-        Button send=button("发送 TERM",true,false,()->{String reason=processBlock(p);if(!reason.isEmpty()){showMessage(error,reason,true);return;}String signal=choices.getCheckedRadioButtonId()==killId?"KILL":"TERM";JSONObject body=json("signal",signal,"start_time",p.optString("start_time"));mutate("/api/v1/processes/"+p.optInt("pid")+"/signal",body,"已发送 "+signal+"，正在刷新进程列表",()->{processesFresh=false;if(page==1)loadCurrent();},false);});choices.setOnCheckedChangeListener((g,id)->{boolean danger=id==killId;send.setText(danger?"发送 KILL":"发送 TERM");send.setBackground(ripple(danger?RED:MINT,12));});box.addView(send,new LinearLayout.LayoutParams(-1,-2));enabled(send,blocked.isEmpty()&&!busy&&!ApiClient.MUTATING.get());showSheet(box);
+        LinearLayout box=sheetBox(p.optString("name",t(R.string.process)));addText(box,"PID "+p.optInt("pid")+" · "+p.optString("user")+" · "+p.optString("state"),14,SECONDARY);gap(box,8);String start=p.optString("start_time");addText(box,t(R.string.start_id,start.length()>24?start.substring(0,24)+"…":start),12,MUTED);gap(box,24);
+        addText(box,t(R.string.host_line,hostLabel()),14,MINT);gap(box,12);
+        RadioGroup choices=new RadioGroup(this);int termId=View.generateViewId(),killId=View.generateViewId();RadioButton term=radio(t(R.string.term_option),termId),kill=radio(t(R.string.kill_option),killId);choices.addView(term);choices.addView(kill);choices.check(termId);box.addView(choices);gap(box,16);TextView error=message(box);String blocked=processBlock(p);showMessage(error,blocked,true);
+        Button send=button(t(R.string.send_term),true,false,()->{String reason=processBlock(p);if(!reason.isEmpty()){showMessage(error,reason,true);return;}String signal=choices.getCheckedRadioButtonId()==killId?"KILL":"TERM";JSONObject body=json("signal",signal,"start_time",p.optString("start_time"));mutate("/api/v1/processes/"+p.optInt("pid")+"/signal",body,t(R.string.signal_sent,signal),()->{processesFresh=false;if(page==1)loadCurrent();},false);});choices.setOnCheckedChangeListener((g,id)->{boolean danger=id==killId;send.setText(danger?t(R.string.send_kill):t(R.string.send_term));send.setBackground(ripple(danger?RED:MINT,12));});box.addView(send,new LinearLayout.LayoutParams(-1,-2));enabled(send,blocked.isEmpty()&&!busy&&!ApiClient.MUTATING.get());showSheet(box);
     }
     private RadioButton radio(String text,int id){RadioButton b=new RadioButton(this);b.setId(id);b.setText(text);b.setTextColor(TEXT);b.setTextSize(14);b.setMinHeight(dp(64));b.setPadding(0,dp(8),0,dp(8));b.setButtonTintList(android.content.res.ColorStateList.valueOf(MINT));return b;}
 
     private void buildServices(){
-        LinearLayout outer=column(),header=pageColumn();serviceHeader=header;header.setPadding(0,dp(20),0,dp(8));serviceRefresh=compact("刷新",()->{serviceList.setSelection(0);loadCurrent();});heading(header,"服务","systemd 服务管理",serviceRefresh);serviceSearch=search("搜索服务名称或描述",serviceQuery,q->{serviceQuery=q;filterServices();});header.addView(searchRow(serviceSearch));gap(header,12);LinearLayout filters=row();String[] labels={"全部","运行","失败","未运行"};for(int i=0;i<4;i++){final int index=i;Button b=compact(labels[i],()->{serviceFilter=index;paintFilters();filterServices();});b.setTextSize(12);b.setPadding(dp(2),dp(10),dp(2),dp(10));b.setTag("filter"+i);LinearLayout.LayoutParams fp=new LinearLayout.LayoutParams(0,-2,1);if(i>0)fp.leftMargin=dp(4);filters.addView(b,fp);}header.addView(filters);serviceMessage=message(header);
-        header.addView(compact("主机工具",()->toolMenu()),new LinearLayout.LayoutParams(-1,-2));
+        LinearLayout outer=column(),header=pageColumn();serviceHeader=header;header.setPadding(0,dp(20),0,dp(8));serviceRefresh=compact(t(R.string.refresh),()->{serviceList.setSelection(0);loadCurrent();});heading(header,t(R.string.nav_services),t(R.string.systemd_services),serviceRefresh);serviceSearch=search(t(R.string.search_services),serviceQuery,q->{serviceQuery=q;filterServices();});header.addView(searchRow(serviceSearch));gap(header,12);LinearLayout filters=column(),line=null;int perRow=largeType()?2:4;String[] labels={t(R.string.filter_all),t(R.string.filter_running),t(R.string.filter_failed),t(R.string.filter_inactive)};for(int i=0;i<4;i++){final int index=i;Button b=compact(labels[i],()->{serviceFilter=index;paintFilters();filterServices();});b.setTextSize(12);b.setPadding(dp(2),dp(10),dp(2),dp(10));b.setTag("filter"+i);if(i%perRow==0){if(i>0)gap(filters,4);line=row();filters.addView(line,new LinearLayout.LayoutParams(-1,-2));}LinearLayout.LayoutParams fp=new LinearLayout.LayoutParams(0,-2,1);if(i%perRow>0)fp.leftMargin=dp(4);line.addView(b,fp);}header.addView(filters);serviceMessage=message(header);
+        header.addView(compact(t(R.string.host_tools),()->toolMenu()),new LinearLayout.LayoutParams(-1,-2));
         serviceList=new ListView(this);serviceList.setDivider(new android.graphics.drawable.ColorDrawable(LINE));serviceList.setDividerHeight(dp(1));serviceList.setPadding(dp(24),0,dp(24),dp(20));serviceList.setClipToPadding(false);serviceList.addHeaderView(header,null,false);serviceAdapter=new DataAdapter(true);serviceList.setAdapter(serviceAdapter);serviceList.setOnItemClickListener((p,v,pos,id)->{int index=pos-serviceList.getHeaderViewsCount();if(index>=0&&index<serviceAdapter.items.size())serviceSheet(serviceAdapter.items.get(index));});outer.addView(serviceList,new LinearLayout.LayoutParams(-1,0,1));attachPage(2,outer);paintFilters();
     }
     private void paintFilters(){if(serviceHeader==null)return;for(int i=0;i<4;i++){Button b=serviceHeader.findViewWithTag("filter"+i);b.setTextColor(i==serviceFilter?MINT:SECONDARY);}}
     private boolean supported=true;
-    private void loadServices(){showMessage(serviceMessage,"正在获取服务…",false);read(config,"/api/v1/services",false,j->{supported=j.getBoolean("supported");services.clear();JSONArray list=j.getJSONArray("services");for(int i=0;i<list.length();i++)services.add(list.getJSONObject(i));servicesFresh=true;filterServices();},e->{servicesFresh=false;showMessage(serviceMessage,e+(services.isEmpty()?"":" · 数据已过期，请刷新后操作"),true);});}
-    private void filterServices(){if(serviceAdapter==null)return;ArrayList<JSONObject> result=new ArrayList<>();String q=serviceQuery.trim().toLowerCase(Locale.ROOT);for(JSONObject s:services){String active=s.optString("active_state");boolean state=serviceFilter==0 || serviceFilter==1&&active.equals("active") || serviceFilter==2&&active.equals("failed") || serviceFilter==3&&active.equals("inactive");if(state && (s.optString("name")+" "+s.optString("description")).toLowerCase(Locale.ROOT).contains(q))result.add(s);}serviceAdapter.set(result);if(servicesFresh)showMessage(serviceMessage,!supported?"此主机不支持 systemd 服务管理":result.isEmpty()?(services.isEmpty()?"暂无服务":"没有匹配的服务 · 清空搜索或选择全部"):"systemd · "+services.size()+" 个服务",false);}
-    private String serviceStatus(JSONObject s){String active=s.optString("active_state","unknown"),sub=s.optString("sub_state","unknown");if(active.equals("active"))return sub.equals("running")?"运行中":"已激活 · "+sub;if(active.equals("inactive"))return "未运行 · "+sub;if(active.equals("failed"))return "失败 · "+sub;return active+" · "+sub;}
+    private void loadServices(){showMessage(serviceMessage,t(R.string.loading_services),false);read(config,"/api/v1/services",false,j->{supported=j.getBoolean("supported");services.clear();JSONArray list=j.getJSONArray("services");for(int i=0;i<list.length();i++)services.add(list.getJSONObject(i));servicesFresh=true;filterServices();},e->{servicesFresh=false;showMessage(serviceMessage,(services.isEmpty()?e:t(R.string.error_stale,e)),true);});}
+    private void filterServices(){if(serviceAdapter==null)return;ArrayList<JSONObject> result=new ArrayList<>();String q=serviceQuery.trim().toLowerCase(Locale.ROOT);for(JSONObject s:services){String active=s.optString("active_state");boolean state=serviceFilter==0 || serviceFilter==1&&active.equals("active") || serviceFilter==2&&active.equals("failed") || serviceFilter==3&&active.equals("inactive");if(state && (s.optString("name")+" "+s.optString("description")).toLowerCase(Locale.ROOT).contains(q))result.add(s);}serviceAdapter.set(result);if(servicesFresh)showMessage(serviceMessage,!supported?t(R.string.no_systemd):result.isEmpty()?(services.isEmpty()?t(R.string.no_services):t(R.string.no_matching_services)):Text.plural(R.plurals.services_count,services.size(),services.size()),false);}
+    private String serviceStatus(JSONObject s){String active=s.optString("active_state","unknown"),sub=s.optString("sub_state","unknown");if(active.equals("active"))return sub.equals("running")?t(R.string.status_running):t(R.string.status_active,sub);if(active.equals("inactive"))return t(R.string.status_inactive,sub);if(active.equals("failed"))return t(R.string.status_failed_sub,sub);return active+" · "+sub;}
     private int serviceColor(JSONObject s){String a=s.optString("active_state");return a.equals("active")?MINT:a.equals("failed")?RED:a.equals("inactive")?SECONDARY:WARN;}
     private void serviceSheet(JSONObject s){
         LinearLayout box=sheetBox(s.optString("name"));addText(box,s.optString("description"),14,SECONDARY);gap(box,12);addText(box,serviceStatus(s),14,serviceColor(s));gap(box,8);addText(box,"load_state  "+s.optString("load_state")+"\nactive_state  "+s.optString("active_state")+"\nsub_state  "+s.optString("sub_state"),12,MUTED);gap(box,24);
-        addText(box,"主机 · "+hostLabel(),14,MINT);gap(box,12);
-        Button favorite=compact(isFavorite(s.optString("name"))?"取消收藏":"收藏服务",()->{toggleFavorite(s.optString("name"));serviceSheet(s);});box.addView(favorite,new LinearLayout.LayoutParams(-1,-2));gap(box,12);
+        addText(box,t(R.string.host_line,hostLabel()),14,MINT);gap(box,12);
+        Button favorite=compact(isFavorite(s.optString("name"))?t(R.string.unfavorite):t(R.string.favorite_add),()->{toggleFavorite(s.optString("name"));serviceSheet(s);});box.addView(favorite,new LinearLayout.LayoutParams(-1,-2));gap(box,12);
         String active=s.optString("active_state");boolean allowed=capability("service_control")&&servicesFresh&&!busy&&!ApiClient.MUTATING.get();
-        String[] acts={"start","restart","stop"},labels={"启动","重启","停止"};
-        for(int i=0;i<3;i++){final String action=acts[i],label=labels[i];Button b=button(label,false,action.equals("stop"),()->{if(!capability("service_control")||!servicesFresh){toast("连接或服务状态已过期，请刷新");return;}confirmService(s,action,label);});enabled(b,allowed&&(i==0?(active.equals("inactive")||active.equals("failed")):active.equals("active")));box.addView(b,new LinearLayout.LayoutParams(-1,-2));gap(box,8);}
-        if(!allowed)addText(box,"控制权限未开放或数据已过期，请刷新连接",12,WARN);else if(!active.equals("active")&&!active.equals("inactive")&&!active.equals("failed"))addText(box,"状态切换中，请刷新",12,WARN);
-        gap(box,12);Button logs=compact("查看日志",()->{if(busy){toast("正在处理请求，请稍候");return;}if(sheet!=null)sheet.dismiss();showLogs(s.optString("name"));});box.addView(logs,new LinearLayout.LayoutParams(-1,-2));showSheet(box);
+        String[] acts={"start","restart","stop"},labels={t(R.string.action_start),t(R.string.action_restart),t(R.string.action_stop)};
+        for(int i=0;i<3;i++){final String action=acts[i],label=labels[i];Button b=button(label,false,action.equals("stop"),()->{if(!capability("service_control")||!servicesFresh){toast(t(R.string.service_stale));return;}confirmService(s,action,label);});enabled(b,allowed&&(i==0?(active.equals("inactive")||active.equals("failed")):active.equals("active")));box.addView(b,new LinearLayout.LayoutParams(-1,-2));gap(box,8);}
+        if(!allowed)addText(box,t(R.string.control_unavailable),12,WARN);else if(!active.equals("active")&&!active.equals("inactive")&&!active.equals("failed"))addText(box,t(R.string.state_changing),12,WARN);
+        gap(box,12);Button logs=compact(t(R.string.view_logs),()->{if(busy){toast(t(R.string.busy));return;}if(sheet!=null)sheet.dismiss();showLogs(s.optString("name"));});box.addView(logs,new LinearLayout.LayoutParams(-1,-2));showSheet(box);
     }
     private String servicePath(String name){return "/api/v1/services/"+encodeSegment(name);}
     private static String encodeSegment(String name){try{return URLEncoder.encode(name,"UTF-8").replace("+","%20");}catch(java.io.UnsupportedEncodingException impossible){throw new AssertionError(impossible);}}
-    private void confirmService(JSONObject s,String action,String label){LinearLayout box=sheetBox(label+"服务？");addText(box,"主机 · "+hostLabel(),14,MINT);gap(box,12);addText(box,s.optString("name"),16,TEXT);gap(box,12);addText(box,action.equals("start")?"将请求启动此服务。":"将中断该服务当前连接。请确认后继续。",14,SECONDARY);gap(box,24);Button send=button("确认"+label,true,!action.equals("start"),()->serviceAction(s,action));box.addView(send,new LinearLayout.LayoutParams(-1,-2));showSheet(box);}
-    private void serviceAction(JSONObject s,String action){if(!capability("service_control")||!servicesFresh){toast("连接或服务状态已过期，请刷新");return;}mutate(servicePath(s.optString("name"))+"/action",json("action",action),"操作完成，正在更新服务状态",()->{servicesFresh=false;if(page==2)loadCurrent();else if(page==0)openFavorite(s.optString("name"));},false);}
+    private void confirmService(JSONObject s,String action,String label){LinearLayout box=sheetBox(t(R.string.confirm_service_title,label));addText(box,t(R.string.host_line,hostLabel()),14,MINT);gap(box,12);addText(box,s.optString("name"),16,TEXT);gap(box,12);addText(box,action.equals("start")?t(R.string.will_start):t(R.string.will_interrupt),14,SECONDARY);gap(box,24);Button send=button(t(R.string.confirm_action,label),true,!action.equals("start"),()->serviceAction(s,action));box.addView(send,new LinearLayout.LayoutParams(-1,-2));showSheet(box);}
+    private void serviceAction(JSONObject s,String action){if(!capability("service_control")||!servicesFresh){toast(t(R.string.service_stale));return;}mutate(servicePath(s.optString("name"))+"/action",json("action",action),t(R.string.service_done),()->{servicesFresh=false;if(page==2)loadCurrent();else if(page==0)openFavorite(s.optString("name"));},false);}
     private void showLogs(String name){
-        LinearLayout box=sheetBox(name);addText(box,"主机 · "+hostLabel()+"\n最近最多 80 行 · 不自动刷新",12,SECONDARY);gap(box,12);
-        TextView info=message(box),count=label("尚未加载");TextView logs=text("正在获取日志…",12,TEXT);logs.setTypeface(Typeface.MONOSPACE);logs.setTextIsSelectable(true);
+        LinearLayout box=sheetBox(name);addText(box,t(R.string.host_line,hostLabel())+"\n"+t(R.string.logs_note),12,SECONDARY);gap(box,12);
+        TextView info=message(box),count=label(t(R.string.not_loaded));TextView logs=text(t(R.string.loading_logs),12,TEXT);logs.setTypeface(Typeface.MONOSPACE);logs.setTextIsSelectable(true);
         final String[] original={""},visible={""};final boolean[] loaded={false};
-        EditText query=search("本地搜索日志", "",q->{});
-        Runnable filter=()->{String q=query.getText().toString();LogFilter.Result r=LogFilter.filter(original[0],q);visible[0]=r.visible;count.setText("匹配 "+r.matches+" 处 · 显示 "+r.lines+" 行");logs.setText(visible[0].isEmpty()?"暂无匹配日志":visible[0]);};watch(query,filter);
-        Runnable fetch=()->{if(busy||ApiClient.MUTATING.get()){toast("正在处理请求，请稍候");return;}showMessage(info,"正在加载…",false);read(config,servicePath(name)+"/logs",false,j->{original[0]=j.getString("logs");loaded[0]=true;filter.run();showMessage(info,j.optBoolean("truncated")?"内容已截断（最多 64 KiB）":"",false);},e->showMessage(info,e,true));};
-        box.addView(compact("刷新日志",fetch),new LinearLayout.LayoutParams(-1,-2));gap(box,8);box.addView(searchRow(query));gap(box,8);box.addView(count);gap(box,12);
-        addText(box,"复制会把日志放入系统剪贴板，可能被其他应用读取。",12,WARN);
-        box.addView(compact("复制可见日志",()->{if(loaded[0])copyLogs(name,visible[0]);}),new LinearLayout.LayoutParams(-1,-2));
-        box.addView(compact("复制全部原始日志",()->{if(loaded[0])copyLogs(name,original[0]);}),new LinearLayout.LayoutParams(-1,-2));gap(box,12);box.addView(logs,new LinearLayout.LayoutParams(-1,-2));showSheet(box);expandSheet();fetch.run();
+        EditText query=search(t(R.string.search_logs), "",q->{});
+        Runnable filter=()->{String q=query.getText().toString();LogFilter.Result r=LogFilter.filter(original[0],q);visible[0]=r.visible;count.setText(t(R.string.log_matches,r.matches,r.lines));logs.setText(visible[0].isEmpty()?t(R.string.no_matching_logs):visible[0]);};watch(query,filter);
+        Runnable fetch=()->{if(busy||ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}showMessage(info,t(R.string.loading),false);read(config,servicePath(name)+"/logs",false,j->{original[0]=j.getString("logs");loaded[0]=true;filter.run();showMessage(info,j.optBoolean("truncated")?t(R.string.logs_truncated):"",false);},e->showMessage(info,e,true));};
+        box.addView(compact(t(R.string.refresh_logs),fetch),new LinearLayout.LayoutParams(-1,-2));gap(box,8);box.addView(searchRow(query));gap(box,8);box.addView(count);gap(box,12);
+        addText(box,t(R.string.clipboard_warning),12,WARN);
+        box.addView(compact(t(R.string.copy_visible),()->{if(loaded[0])copyLogs(name,visible[0]);}),new LinearLayout.LayoutParams(-1,-2));
+        box.addView(compact(t(R.string.copy_all),()->{if(loaded[0])copyLogs(name,original[0]);}),new LinearLayout.LayoutParams(-1,-2));gap(box,12);box.addView(logs,new LinearLayout.LayoutParams(-1,-2));showSheet(box);expandSheet();fetch.run();
     }
-    private void copyLogs(String name,String value){((android.content.ClipboardManager)getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText(name,value));toast("已复制到系统剪贴板");}
+    private void copyLogs(String name,String value){((android.content.ClipboardManager)getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText(name,value));toast(t(R.string.copied));}
 
     private final class DataAdapter extends BaseAdapter {
         final boolean service;final ArrayList<JSONObject> items=new ArrayList<>();DataAdapter(boolean service){this.service=service;}
@@ -322,7 +333,7 @@ public final class MainActivity extends Activity {
             Holder h;if(convert==null){h=new Holder();LinearLayout r=largeType()?column():row();r.setMinimumHeight(dp(service?84:80));r.setPadding(0,dp(14),0,dp(14));r.setBackground(ripple(BG,0));LinearLayout names=column();h.title=text("",15,TEXT);h.title.setSingleLine();h.title.setEllipsize(TextUtils.TruncateAt.END);h.detail=text("",12,SECONDARY);h.detail.setMaxLines(2);h.detail.setEllipsize(TextUtils.TruncateAt.END);names.addView(h.title);gap(names,6);names.addView(h.detail);if(largeType())r.addView(names,new LinearLayout.LayoutParams(-1,-2));else weight(r,names);h.value=text("",service?12:16,service?MINT:TEXT);h.value.setGravity(largeType()?Gravity.LEFT:Gravity.RIGHT);h.value.setMaxLines(3);LinearLayout.LayoutParams vp=new LinearLayout.LayoutParams(largeType()?-1:dp(service?110:100),-2);if(!largeType())vp.leftMargin=dp(12);r.addView(h.value,vp);r.setTag(h);convert=r;}else h=(Holder)convert.getTag();
             JSONObject item=items.get(position);h.title.setText(item.optString("name","—"));
             if(service){h.detail.setText(item.optString("description"));h.value.setText(serviceStatus(item)+"  ›");h.value.setTextColor(serviceColor(item));}else{h.detail.setText("PID "+item.optInt("pid")+" · "+item.optString("user")+" · "+item.optString("state"));h.value.setText(processCpu?percent(number(item,"cpu_percent"))+"\n"+bytes(number(item,"memory_bytes")):bytes(number(item,"memory_bytes"))+"\n"+percent(number(item,"cpu_percent")));}
-            convert.setContentDescription(item.optString("name")+"，"+h.detail.getText()+"，"+h.value.getText()+"，查看操作");return convert;
+            convert.setContentDescription(t(R.string.row_description,item.optString("name"),h.detail.getText(),h.value.getText()));return convert;
         }
     }
     private static final class Holder {TextView title,detail,value;}
@@ -330,15 +341,15 @@ public final class MainActivity extends Activity {
     private EditText input(String hint,boolean secret){EditText e=new EditText(this);e.setTextColor(TEXT);e.setHintTextColor(MUTED);e.setTextSize(15);e.setHint(hint);e.setSingleLine(true);e.setMinHeight(dp(52));e.setPadding(dp(12),dp(12),dp(12),dp(12));e.setBackground(shape(RAISED,12,false));e.setSaveEnabled(false);e.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);e.setImeOptions(android.view.inputmethod.EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING|android.view.inputmethod.EditorInfo.IME_ACTION_NEXT);e.setInputType(secret?android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD:android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_VARIATION_URI);if(secret)e.setTransformationMethod(PasswordTransformationMethod.getInstance());return e;}
     private void watch(EditText e,Runnable changed){e.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int start,int count,int after){}public void onTextChanged(CharSequence s,int start,int before,int count){changed.run();}public void afterTextChanged(Editable s){}});}
     private void field(LinearLayout box,String title,EditText e){box.addView(label(title));gap(box,8);box.addView(e,new LinearLayout.LayoutParams(-1,-2));gap(box,20);}
-    private void secretField(LinearLayout box,String title,EditText e){box.addView(label(title));gap(box,8);LinearLayout r=row();weight(r,e);Button toggle=compact("显示",()->{boolean hidden=e.getTransformationMethod()!=null;e.setTransformationMethod(hidden?null:PasswordTransformationMethod.getInstance());e.setSelection(e.length());Button b=(Button)((LinearLayout)e.getParent()).getChildAt(1);b.setText(hidden?"隐藏":"显示");b.setContentDescription((hidden?"隐藏":"显示")+title);});toggle.setContentDescription("显示"+title);LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(dp(64),-2);p.leftMargin=dp(8);r.addView(toggle,p);box.addView(r);gap(box,20);}
+    private void secretField(LinearLayout box,String title,EditText e){box.addView(label(title));gap(box,8);LinearLayout r=row();weight(r,e);Button toggle=compact(t(R.string.show),()->{boolean hidden=e.getTransformationMethod()!=null;e.setTransformationMethod(hidden?null:PasswordTransformationMethod.getInstance());e.setSelection(e.length());Button b=(Button)((LinearLayout)e.getParent()).getChildAt(1);b.setText(hidden?t(R.string.hide):t(R.string.show));b.setContentDescription(t(hidden?R.string.hide_field:R.string.show_field,title));});toggle.setContentDescription(t(R.string.show_field,title));LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-2,-2);p.leftMargin=dp(8);r.addView(toggle,p);box.addView(r);gap(box,20);}
     private void buildSettings(){
-        settings=pageColumn();heading(settings,config==null?"连接你的服务器":"设置",config==null?"LiteHelm · 轻量服务器管家":"连接与主机控制",null);LinearLayout form=panel();
-        settings.addView(compact("管理与切换主机",()->chooseHost()),new LinearLayout.LayoutParams(-1,-2));gap(settings,12);
-        nameInput=input("例如：生产主机",false);addressInput=input("https://node.example.com",false);tokenInput=input("服务器访问令牌",true);
+        settings=pageColumn();heading(settings,config==null?t(R.string.connect_server):t(R.string.nav_settings),config==null?t(R.string.brand_tagline):t(R.string.settings_subtitle),null);LinearLayout form=panel();
+        settings.addView(compact(t(R.string.manage_hosts),()->chooseHost()),new LinearLayout.LayoutParams(-1,-2));gap(settings,12);settings.addView(compact(t(R.string.language_button,languageName(languageTag())),()->chooseLanguage()),new LinearLayout.LayoutParams(-1,-2));gap(settings,12);
+        nameInput=input(t(R.string.hint_name),false);addressInput=input("https://node.example.com",false);tokenInput=input(t(R.string.hint_token),true);
         nameInput.setText(state.draft?state.name:book.active()==null?"":book.active().name);
         addressInput.setText(state.draft?state.address:config==null?"":config.origin);tokenInput.setText(state.draft?state.token:config==null?"":config.token);
-        field(form,"主机名称",nameInput);field(form,"服务器地址",addressInput);secretField(form,"访问令牌",tokenInput);
-        settingsError=message(form);saveButton=button("保存并连接",true,false,()->saveConnection());form.addView(saveButton,new LinearLayout.LayoutParams(-1,-2));settings.addView(form);gap(settings,28);powerArea=column();settings.addView(powerArea);gap(settings,28);TextView footer=text("LiteHelm · 轻量服务器管家",11,MUTED);footer.setGravity(Gravity.CENTER);settings.addView(footer);
+        field(form,t(R.string.host_name),nameInput);field(form,t(R.string.server_address),addressInput);secretField(form,t(R.string.access_token),tokenInput);
+        settingsError=message(form);saveButton=button(t(R.string.save_connect),true,false,()->saveConnection());form.addView(saveButton,new LinearLayout.LayoutParams(-1,-2));settings.addView(form);gap(settings,28);powerArea=column();settings.addView(powerArea);gap(settings,28);TextView footer=text(t(R.string.brand_tagline),11,MUTED);footer.setGravity(Gravity.CENTER);settings.addView(footer);
         for(EditText e:new EditText[]{nameInput,addressInput,tokenInput})watch(e,()->{dirty=true;captureDraft();if(!busy)showMessage(settingsError,"",false);});attachPage(3,scroll(settings));updatePower();updateHostLabel();
     }
     private void captureDraft(){if(addressInput==null)return;state.draft=true;state.address=addressInput.getText().toString();state.token=tokenInput.getText().toString();state.name=nameInput.getText().toString();state.editingId=editingId;}
@@ -346,8 +357,8 @@ public final class MainActivity extends Activity {
         if(busy||ApiClient.MUTATING.get())return;final ApiClient.Config candidate;
         try{candidate=ApiClient.validate(addressInput.getText().toString(),tokenInput.getText().toString());}catch(Exception e){showMessage(settingsError,e.getMessage(),true);return;}
         final String profileName=nameInput.getText().toString().trim(),profileId=editingId.isEmpty()?ProfileBook.newId():editingId;
-        if(profileName.isEmpty()||profileName.length()>80){showMessage(settingsError,"请填写 1–80 字主机名称",true);return;}
-        captureDraft();validating=true;showMessage(settingsError,"正在验证服务器…",false);
+        if(profileName.isEmpty()||profileName.length()>80){showMessage(settingsError,t(R.string.err_name_length),true);return;}
+        captureDraft();validating=true;showMessage(settingsError,t(R.string.verifying_server),false);
         // Prevent editing a credential draft while its exact values are being verified.
         for(EditText e:new EditText[]{nameInput,addressInput,tokenInput})enabled(e,false);
         read(candidate,"/api/v1/system",true,j->{
@@ -357,142 +368,142 @@ public final class MainActivity extends Activity {
             if(previous!=null){profile.favorites.addAll(previous.favorites);next.profiles.set(next.profiles.indexOf(previous),profile);}else next.profiles.add(profile);
             next.activeId=profileId;vault.save(next);book=next;state.book=book;editingId=profileId;config=candidate;state.config=config;
             clearHostData();system=j;systemFresh=true;connected=true;systemError="";lastSystemSuccess=System.currentTimeMillis();dirty=false;
-            addressInput.setText(candidate.origin);updateHostLabel();renderFavorites();updateDashboard();updatePower();toast("连接成功");switchPage(0,false);loadCurrent();
+            addressInput.setText(candidate.origin);updateHostLabel();renderFavorites();updateDashboard();updatePower();toast(t(R.string.connected_toast));switchPage(0,false);loadCurrent();
         },e->{for(EditText field:new EditText[]{nameInput,addressInput,tokenInput})enabled(field,true);showMessage(settingsError,e,true);});
     }
-    private void updatePower(){if(powerArea==null)return;powerArea.removeAllViews();addText(powerArea,"主机控制",15,TEXT);gap(powerArea,12);if(config==null){addText(powerArea,"连接服务器后可查看控制权限",12,MUTED);return;}addText(powerArea,system==null?"尚未获取主机信息":system.optString("hostname"),14,SECONDARY);gap(powerArea,16);JSONObject caps=system==null?null:system.optJSONObject("capabilities");if(caps==null||!caps.optBoolean("power",false)){addText(powerArea,"电源操作未启用",14,SECONDARY);gap(powerArea,6);addText(powerArea,"需在服务器配置中开启",12,MUTED);return;}Button reboot=button("重启服务器",false,false,()->powerConfirm("reboot")),off=button("关闭服务器",false,true,()->powerConfirm("poweroff"));powerArea.addView(reboot,new LinearLayout.LayoutParams(-1,-2));gap(powerArea,8);powerArea.addView(off,new LinearLayout.LayoutParams(-1,-2));boolean can=capability("power")&&!busy&&!ApiClient.MUTATING.get();enabled(reboot,can);enabled(off,can);if(!can){gap(powerArea,8);addText(powerArea,"请刷新连接后再操作",12,WARN);}}
-    private void powerConfirm(String action){if(!capability("power")){toast("请先验证连接和主机权限");return;}String host=system.optString("hostname");boolean off=action.equals("poweroff");LinearLayout box=sheetBox(off?"关闭服务器？":"重启服务器？");addText(box,"主机 · "+hostLabel(),14,MINT);gap(box,12);addText(box,host,18,TEXT);gap(box,12);addText(box,off?"将断开当前连接。关机后需通过其他方式开机。":"将断开当前连接，请确认没有正在进行的重要任务。",14,SECONDARY);gap(box,20);EditText confirm=input("输入主机名以确认",false);confirm.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);box.addView(confirm,new LinearLayout.LayoutParams(-1,-2));gap(box,20);Button send=button(off?"确认关机":"确认重启",true,true,()->{if(!capability("power")||!host.equals(confirm.getText().toString()))return;mutate("/api/v1/power",json("action",action,"confirm",host),off?"服务器已安排关机":"服务器已安排重启",()->{systemFresh=false;processesFresh=false;servicesFresh=false;systemError="电源操作已安排，连接将断开，请稍后重新检查";connected=false;connection.setText("● 等待主机");connection.setTextColor(WARN);updatePower();updateDashboard();},true);});enabled(send,false);watch(confirm,()->enabled(send,host.equals(confirm.getText().toString())&&!busy&&!ApiClient.MUTATING.get()));box.addView(send,new LinearLayout.LayoutParams(-1,-2));showSheet(box);}
+    private void updatePower(){if(powerArea==null)return;powerArea.removeAllViews();addText(powerArea,t(R.string.host_control),15,TEXT);gap(powerArea,12);if(config==null){addText(powerArea,t(R.string.host_control_hint),12,MUTED);return;}addText(powerArea,system==null?t(R.string.host_info_missing):system.optString("hostname"),14,SECONDARY);gap(powerArea,16);JSONObject caps=system==null?null:system.optJSONObject("capabilities");if(caps==null||!caps.optBoolean("power",false)){addText(powerArea,t(R.string.power_disabled),14,SECONDARY);gap(powerArea,6);addText(powerArea,t(R.string.power_enable_hint),12,MUTED);return;}Button reboot=button(t(R.string.reboot_server),false,false,()->powerConfirm("reboot")),off=button(t(R.string.shutdown_server),false,true,()->powerConfirm("poweroff"));powerArea.addView(reboot,new LinearLayout.LayoutParams(-1,-2));gap(powerArea,8);powerArea.addView(off,new LinearLayout.LayoutParams(-1,-2));boolean can=capability("power")&&!busy&&!ApiClient.MUTATING.get();enabled(reboot,can);enabled(off,can);if(!can){gap(powerArea,8);addText(powerArea,t(R.string.refresh_before_action),12,WARN);}}
+    private void powerConfirm(String action){if(!capability("power")){toast(t(R.string.verify_permission_first));return;}String host=system.optString("hostname");boolean off=action.equals("poweroff");LinearLayout box=sheetBox(off?t(R.string.shutdown_title):t(R.string.reboot_title));addText(box,t(R.string.host_line,hostLabel()),14,MINT);gap(box,12);addText(box,host,18,TEXT);gap(box,12);addText(box,off?t(R.string.shutdown_warning):t(R.string.reboot_warning),14,SECONDARY);gap(box,20);EditText confirm=input(t(R.string.hint_type_hostname),false);confirm.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);box.addView(confirm,new LinearLayout.LayoutParams(-1,-2));gap(box,20);Button send=button(off?t(R.string.confirm_shutdown):t(R.string.confirm_reboot),true,true,()->{if(!capability("power")||!host.equals(confirm.getText().toString()))return;mutate("/api/v1/power",json("action",action,"confirm",host),off?t(R.string.shutdown_scheduled):t(R.string.reboot_scheduled),()->{systemFresh=false;processesFresh=false;servicesFresh=false;systemError=t(R.string.power_scheduled);connected=false;connection.setText(t(R.string.status_waiting_host));connection.setTextColor(WARN);updatePower();updateDashboard();},true);});enabled(send,false);watch(confirm,()->enabled(send,host.equals(confirm.getText().toString())&&!busy&&!ApiClient.MUTATING.get()));box.addView(send,new LinearLayout.LayoutParams(-1,-2));showSheet(box);}
 
-    private String hostLabel(){ProfileBook.Profile p=book.active();return p==null?"未配置":p.name+" · "+p.config.origin;}
-    private void updateHostLabel(){if(hostChoice!=null){hostChoice.setText("LiteHelm · "+(book.active()==null?"主机":book.active().name)+" ▾");hostChoice.setContentDescription("切换主机，当前 "+hostLabel());}}
-    private boolean canChangeHost(){if(ApiClient.MUTATING.get()){toast("写入尚未完成，暂时不能切换或修改主机");return false;}return true;}
+    private String hostLabel(){ProfileBook.Profile p=book.active();return p==null?t(R.string.not_configured):p.name+" · "+p.config.origin;}
+    private void updateHostLabel(){if(hostChoice!=null){hostChoice.setText(t(R.string.host_choice,book.active()==null?t(R.string.host):book.active().name));hostChoice.setContentDescription(t(R.string.switch_host_current,hostLabel()));}}
+    private boolean canChangeHost(){if(ApiClient.MUTATING.get()){toast(t(R.string.write_pending));return false;}return true;}
     private void clearHostData(){
         generation++;handler.removeCallbacks(poll);api.cancelRead();if(sheet!=null)sheet.dismiss();loadPending=false;
         system=null;lastSystemSuccess=0;systemFresh=false;processesFresh=false;servicesFresh=false;connected=false;supported=true;systemError="";resetRates();
         processes.clear();services.clear();processAdapter.set(new ArrayList<>());serviceAdapter.set(new ArrayList<>());
-        showMessage(processMessage,"尚未加载当前主机进程",false);showMessage(serviceMessage,"尚未加载当前主机服务",false);
+        showMessage(processMessage,t(R.string.processes_not_loaded),false);showMessage(serviceMessage,t(R.string.services_not_loaded),false);
         processQuery="";serviceQuery="";processSearch.setText("");serviceSearch.setText("");serviceFilter=0;paintFilters();Arrays.fill(scrollY,0);
-        connection.setText("● 未连接");connection.setTextColor(MUTED);updateDashboard();updatePower();
+        connection.setText(t(R.string.status_disconnected));connection.setTextColor(MUTED);updateDashboard();updatePower();
     }
     private void chooseHost(){
         if(!canChangeHost())return;
         generation++;api.cancelRead();loadPending=false;
-        LinearLayout box=sheetBox("主机");addText(box,"仅连接当前主机，不自动查询其他主机。",12,SECONDARY);gap(box,16);
+        LinearLayout box=sheetBox(t(R.string.host));addText(box,t(R.string.only_current),12,SECONDARY);gap(box,16);
         for(ProfileBook.Profile p:book.profiles){
-            addText(box,p.name+(p.id.equals(book.activeId)?" · 当前":""),16,p.id.equals(book.activeId)?MINT:TEXT);gap(box,6);addText(box,p.config.origin,12,SECONDARY);gap(box,8);
-            box.addView(compact("连接此主机",()->activateProfile(p.id)),new LinearLayout.LayoutParams(-1,-2));gap(box,8);
-            box.addView(compact("编辑",()->editProfile(p)),new LinearLayout.LayoutParams(-1,-2));gap(box,8);
-            box.addView(button("删除主机",false,true,()->confirmDeleteProfile(p)),new LinearLayout.LayoutParams(-1,-2));divider(box);
+            addText(box,(p.id.equals(book.activeId)?t(R.string.current_suffix,p.name):p.name),16,p.id.equals(book.activeId)?MINT:TEXT);gap(box,6);addText(box,p.config.origin,12,SECONDARY);gap(box,8);
+            box.addView(compact(t(R.string.connect_host),()->activateProfile(p.id)),new LinearLayout.LayoutParams(-1,-2));gap(box,8);
+            box.addView(compact(t(R.string.edit),()->editProfile(p)),new LinearLayout.LayoutParams(-1,-2));gap(box,8);
+            box.addView(button(t(R.string.delete_host),false,true,()->confirmDeleteProfile(p)),new LinearLayout.LayoutParams(-1,-2));divider(box);
         }
-        box.addView(button("添加主机",true,false,()->editProfile(null)),new LinearLayout.LayoutParams(-1,-2));showSheet(box);
+        box.addView(button(t(R.string.add_host),true,false,()->editProfile(null)),new LinearLayout.LayoutParams(-1,-2));showSheet(box);
     }
     private void editProfile(ProfileBook.Profile profile){
         if(!canChangeHost())return;if(sheet!=null)sheet.dismiss();switchPage(3,false);
         editingId=profile==null?"":profile.id;nameInput.setText(profile==null?"":profile.name);addressInput.setText(profile==null?"":profile.config.origin);tokenInput.setText(profile==null?"":profile.config.token);captureDraft();
-        showMessage(settingsError,profile==null?"新增主机 · 验证成功后保存":"编辑 "+profile.name+" · 验证成功后替换",false);((ScrollView)pages[3]).smoothScrollTo(0,0);
+        showMessage(settingsError,profile==null?t(R.string.new_host_hint):t(R.string.edit_host_hint,profile.name),false);((ScrollView)pages[3]).smoothScrollTo(0,0);
     }
     private void confirmDeleteProfile(ProfileBook.Profile profile){
-        if(!canChangeHost())return;LinearLayout box=sheetBox("删除已保存主机？");addText(box,profile.name+"\n"+profile.config.origin,16,TEXT);gap(box,16);addText(box,"此主机的本机凭据和收藏将一并删除。",14,SECONDARY);gap(box,24);
-        box.addView(button("确认删除",true,true,()->{if(!canChangeHost())return;try{ProfileBook next=book.copy();ProfileBook.Profile removed=next.find(profile.id);if(removed==null)return;boolean active=next.activeId.equals(profile.id);next.profiles.remove(removed);if(active)next.activeId=next.profiles.isEmpty()?"":next.profiles.get(0).id;vault.save(next);book=next;state.book=book;
+        if(!canChangeHost())return;LinearLayout box=sheetBox(t(R.string.delete_title));addText(box,profile.name+"\n"+profile.config.origin,16,TEXT);gap(box,16);addText(box,t(R.string.delete_warning),14,SECONDARY);gap(box,24);
+        box.addView(button(t(R.string.confirm_delete),true,true,()->{if(!canChangeHost())return;try{ProfileBook next=book.copy();ProfileBook.Profile removed=next.find(profile.id);if(removed==null)return;boolean active=next.activeId.equals(profile.id);next.profiles.remove(removed);if(active)next.activeId=next.profiles.isEmpty()?"":next.profiles.get(0).id;vault.save(next);book=next;state.book=book;
             if(active){config=book.active()==null?null:book.active().config;state.config=config;clearHostData();}else if(sheet!=null)sheet.dismiss();
             updateHostLabel();renderFavorites();if(active||editingId.equals(profile.id))editProfile(book.active());if(active&&config!=null)loadCurrent();
-        }catch(Exception e){toast("无法保存删除结果，请重试");}}),new LinearLayout.LayoutParams(-1,-2));showSheet(box);
+        }catch(Exception e){toast(t(R.string.err_delete));}}),new LinearLayout.LayoutParams(-1,-2));showSheet(box);
     }
     private void activateProfile(String id){
         if(!canChangeHost())return;if(id.equals(book.activeId)){if(sheet!=null)sheet.dismiss();return;}
         try{ProfileBook next=book.copy();if(next.find(id)==null)return;next.activeId=id;vault.save(next);book=next;state.book=book;config=book.active().config;state.config=config;clearHostData();
             editingId=id;nameInput.setText(book.active().name);addressInput.setText(config.origin);tokenInput.setText(config.token);captureDraft();updateHostLabel();renderFavorites();switchPage(0,true);
-        }catch(Exception e){toast("无法保存当前主机，请重试");}
+        }catch(Exception e){toast(t(R.string.err_save_host));}
     }
     private boolean isFavorite(String name){return book.active()!=null&&book.active().favorites.contains(name);}
     private void toggleFavorite(String name){
-        if(book.active()==null)return;try{ProfileBook next=book.copy();ArrayList<String> favorites=next.active().favorites;if(!favorites.remove(name)){if(favorites.size()>=ProfileBook.FAVORITE_LIMIT){toast("每台主机最多收藏 12 个服务");return;}favorites.add(name);}vault.save(next);
+        if(book.active()==null)return;try{ProfileBook next=book.copy();ArrayList<String> favorites=next.active().favorites;if(!favorites.remove(name)){if(favorites.size()>=ProfileBook.FAVORITE_LIMIT){toast(t(R.string.favorite_limit));return;}favorites.add(name);}vault.save(next);
             // Keep the exact connection object used by in-flight identity guards.
             book.active().favorites.clear();book.active().favorites.addAll(favorites);state.book=book;renderFavorites();
-        }catch(Exception e){toast("无法保存收藏，请重试");}
+        }catch(Exception e){toast(t(R.string.err_favorite));}
     }
     private void renderFavorites(){
-        if(favoritesArea==null)return;favoritesArea.removeAllViews();gap(favoritesArea,20);addText(favoritesArea,"收藏服务",15,TEXT);gap(favoritesArea,8);addText(favoritesArea,"状态未查询 · 点击获取最新详情",12,MUTED);gap(favoritesArea,8);
-        ProfileBook.Profile profile=book.active();if(profile==null||profile.favorites.isEmpty()){addText(favoritesArea,"在服务详情中添加收藏",12,SECONDARY);return;}
+        if(favoritesArea==null)return;favoritesArea.removeAllViews();gap(favoritesArea,20);addText(favoritesArea,t(R.string.favorites_title),15,TEXT);gap(favoritesArea,8);addText(favoritesArea,t(R.string.favorites_note),12,MUTED);gap(favoritesArea,8);
+        ProfileBook.Profile profile=book.active();if(profile==null||profile.favorites.isEmpty()){addText(favoritesArea,t(R.string.favorites_empty),12,SECONDARY);return;}
         for(String name:profile.favorites){favoritesArea.addView(compact(name+"  ›",()->openFavorite(name)),new LinearLayout.LayoutParams(-1,-2));gap(favoritesArea,6);}
     }
     private void openFavorite(String name){
-        if(busy||ApiClient.MUTATING.get()){toast("正在处理请求，请稍候");return;}
-        LinearLayout box=sheetBox(name);TextView info=message(box);showMessage(info,"正在获取最新服务状态…",false);showSheet(box);servicesFresh=false;
+        if(busy||ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}
+        LinearLayout box=sheetBox(name);TextView info=message(box);showMessage(info,t(R.string.loading_service_state),false);showSheet(box);servicesFresh=false;
         read(config,"/api/v1/system",false,j->{system=j;systemFresh=true;lastSystemSuccess=System.currentTimeMillis();systemError="";
             read(config,"/api/v1/services",false,data->{supported=data.getBoolean("supported");services.clear();JSONArray list=data.getJSONArray("services");JSONObject target=null;for(int i=0;i<list.length();i++){JSONObject service=list.getJSONObject(i);services.add(service);if(name.equals(service.optString("name")))target=service;}servicesFresh=true;filterServices();
-                if(target==null)showMessage(info,supported?"当前主机未找到该服务，可在服务页管理收藏":"此主机不支持 systemd 服务管理",false);else serviceSheet(target);
+                if(target==null)showMessage(info,supported?t(R.string.service_not_found):t(R.string.no_systemd),false);else serviceSheet(target);
             },e->{servicesFresh=false;showMessage(info,e,true);});
         },e->{systemFresh=false;showMessage(info,e,true);});
     }
 
     private void toolMenu(){
-        if(config==null){toast("请先连接主机");return;}if(busy||ApiClient.MUTATING.get()){toast("正在处理请求，请稍候");return;}
-        LinearLayout box=sheetBox("主机工具");addText(box,hostLabel()+"\n按需读取 · 手动刷新",12,SECONDARY);gap(box,20);
-        box.addView(compact("监听端口",()->openTool("ports")),new LinearLayout.LayoutParams(-1,-2));gap(box,8);
-        box.addView(compact("systemd 定时任务",()->openTool("timers")),new LinearLayout.LayoutParams(-1,-2));gap(box,8);
-        box.addView(compact("磁盘与受限目录扫描",()->openTool("disks")),new LinearLayout.LayoutParams(-1,-2));showSheet(box);
+        if(config==null){toast(t(R.string.connect_host_first));return;}if(busy||ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}
+        LinearLayout box=sheetBox(t(R.string.host_tools));addText(box,hostLabel()+"\n"+t(R.string.tools_note),12,SECONDARY);gap(box,20);
+        box.addView(compact(t(R.string.listening_ports),()->openTool("ports")),new LinearLayout.LayoutParams(-1,-2));gap(box,8);
+        box.addView(compact(t(R.string.systemd_timers),()->openTool("timers")),new LinearLayout.LayoutParams(-1,-2));gap(box,8);
+        box.addView(compact(t(R.string.disks_scan_menu),()->openTool("disks")),new LinearLayout.LayoutParams(-1,-2));showSheet(box);
     }
     private void toolRead(String path,JSONObject body,Result success,java.util.function.Consumer<String> failure){
-        if(busy||ApiClient.MUTATING.get()||config==null||!foreground||sheet==null){toast("正在处理请求，请稍候");return;}
+        if(busy||ApiClient.MUTATING.get()||config==null||!foreground||sheet==null){toast(t(R.string.busy));return;}
         busy=true;handler.removeCallbacks(poll);updateControls();final int gen=generation,sg=sheetGeneration;final ApiClient.Config identity=config;
-        ApiClient.IO.execute(()->{JSONObject data=null;String error=null;try{if(!RequestPolicy.current(foreground,generation,gen,config,identity,true,sheetGeneration,sg))throw new Exception("请求已取消");data=api.request(identity,path,body,()->RequestPolicy.current(foreground,generation,gen,config,identity,true,sheetGeneration,sg));ToolData.validate(path,data);}catch(Exception e){error=e.getMessage()==null?"工具读取失败":ApiClient.redact(e.getMessage(),identity);}final JSONObject result=data;final String problem=error;
-            handler.post(()->{busy=false;if(destroyed)return;if(sheet!=null&&RequestPolicy.current(foreground,generation,gen,config,identity,true,sheetGeneration,sg)){if(problem==null)try{status(true);success.accept(result);}catch(Exception e){failure.accept("工具数据格式异常，请检查服务端版本");}else{status(false);failure.accept(problem);}}updateControls();if(loadPending&&foreground){loadPending=false;loadCurrent();}else schedulePoll();});
+        ApiClient.IO.execute(()->{JSONObject data=null;String error=null;try{if(!RequestPolicy.current(foreground,generation,gen,config,identity,true,sheetGeneration,sg))throw new Exception(t(R.string.request_cancelled));data=api.request(identity,path,body,()->RequestPolicy.current(foreground,generation,gen,config,identity,true,sheetGeneration,sg));ToolData.validate(path,data);}catch(Exception e){error=e.getMessage()==null?t(R.string.tool_read_failed):ApiClient.redact(e.getMessage(),identity);}final JSONObject result=data;final String problem=error;
+            handler.post(()->{busy=false;if(destroyed)return;if(sheet!=null&&RequestPolicy.current(foreground,generation,gen,config,identity,true,sheetGeneration,sg)){if(problem==null)try{status(true);success.accept(result);}catch(Exception e){failure.accept(t(R.string.err_tool_format));}else{status(false);failure.accept(problem);}}updateControls();if(loadPending&&foreground){loadPending=false;loadCurrent();}else schedulePoll();});
         });
     }
     private void openTool(String kind){
-        if(busy||ApiClient.MUTATING.get()){toast("正在处理请求，请稍候");return;}
-        String title=kind.equals("ports")?"监听端口":kind.equals("timers")?"systemd 定时任务":"磁盘与受限扫描";
-        LinearLayout box=sheetBox(title);addText(box,"主机 · "+hostLabel()+"\n不自动刷新",12,SECONDARY);gap(box,12);TextView info=message(box);LinearLayout rows=column();final JSONObject[] cached={null};
-        EditText query=search(kind.equals("ports")?"搜索地址、进程或服务":"本地搜索名称或路径","",q->{});
+        if(busy||ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}
+        String title=kind.equals("ports")?t(R.string.listening_ports):kind.equals("timers")?t(R.string.systemd_timers):t(R.string.disks_scan_title);
+        LinearLayout box=sheetBox(title);addText(box,t(R.string.host_line,hostLabel())+"\n"+t(R.string.no_auto_refresh),12,SECONDARY);gap(box,12);TextView info=message(box);LinearLayout rows=column();final JSONObject[] cached={null};
+        EditText query=search(kind.equals("ports")?t(R.string.search_ports):t(R.string.search_name_path),"",q->{});
         Runnable render=()->{rows.removeAllViews();if(cached[0]==null)return;renderTool(kind,cached[0],query.getText().toString(),rows);};watch(query,render);
-        Runnable fetch=()->{showMessage(info,"正在读取…",false);toolRead("/api/v1/"+kind,null,j->{cached[0]=j;render.run();showMessage(info,j.optBoolean("truncated")?"结果已截断，请缩小本地筛选范围；未显示部分需在主机检查":"",false);},e->{cached[0]=null;rows.removeAllViews();showMessage(info,e,true);});};
-        box.addView(compact("刷新",fetch),new LinearLayout.LayoutParams(-1,-2));gap(box,8);box.addView(searchRow(query));gap(box,16);box.addView(rows);showSheet(box);expandSheet();fetch.run();
+        Runnable fetch=()->{showMessage(info,t(R.string.reading),false);toolRead("/api/v1/"+kind,null,j->{cached[0]=j;render.run();showMessage(info,j.optBoolean("truncated")?t(R.string.tool_truncated):"",false);},e->{cached[0]=null;rows.removeAllViews();showMessage(info,e,true);});};
+        box.addView(compact(t(R.string.refresh),fetch),new LinearLayout.LayoutParams(-1,-2));gap(box,8);box.addView(searchRow(query));gap(box,16);box.addView(rows);showSheet(box);expandSheet();fetch.run();
     }
     private void renderTool(String kind,JSONObject data,String query,LinearLayout rows){
-        if(!kind.equals("disks")&&!data.optBoolean("supported",false)){addText(rows,kind.equals("timers")?"此主机不支持 systemd 定时任务":"此主机无法读取监听端口",15,WARN);gap(rows,8);addText(rows,data.optString("message","所需系统能力不可用"),12,SECONDARY);return;}
+        if(!kind.equals("disks")&&!data.optBoolean("supported",false)){addText(rows,kind.equals("timers")?t(R.string.timers_unsupported):t(R.string.ports_unsupported),15,WARN);gap(rows,8);addText(rows,data.optString("message",t(R.string.capability_missing)),12,SECONDARY);return;}
         JSONArray items=data.optJSONArray(kind);String q=query.trim().toLowerCase(Locale.ROOT);int shown=0;
         if(items!=null)for(int i=0;i<items.length();i++){
             JSONObject item=items.optJSONObject(i);if(item==null)continue;if(!ToolData.searchText(kind,item).toLowerCase(Locale.ROOT).contains(q))continue;shown++;
             if(kind.equals("ports")){
                 addText(rows,item.optString("protocol").toUpperCase(Locale.ROOT)+" · "+item.optString("address"),16,TEXT);gap(rows,8);
-                addText(rows,"PID "+(item.optInt("pid")>0?item.optInt("pid"):"不可用")+" · "+ToolData.available(item.optString("process"))+"\n服务 · "+ToolData.available(item.optString("service")),12,SECONDARY);
+                addText(rows,t(R.string.port_detail,item.optInt("pid")>0?String.valueOf(item.optInt("pid")):t(R.string.unavailable),ToolData.available(item.optString("process")),ToolData.available(item.optString("service"))),12,SECONDARY);
             }else if(kind.equals("timers")){
                 addText(rows,item.optString("name"),16,TEXT);gap(rows,6);addText(rows,item.optString("description")+"\n"+item.optString("active_state")+" · "+item.optString("sub_state"),12,SECONDARY);gap(rows,8);
-                addText(rows,"下次 · "+ToolData.available(item.optString("next_run"))+"\n上次 · "+ToolData.available(item.optString("last_run"))+"\n触发单元 · "+ToolData.available(item.optString("unit")),12,SECONDARY);
-                if(item.optBoolean("can_run")){gap(rows,12);rows.addView(compact("手动触发",()->confirmTimer(item)),new LinearLayout.LayoutParams(-1,-2));}else{gap(rows,8);addText(rows,"手动触发未获服务器授权",12,MUTED);}
+                addText(rows,t(R.string.timer_detail,ToolData.available(item.optString("next_run")),ToolData.available(item.optString("last_run")),ToolData.available(item.optString("unit"))),12,SECONDARY);
+                if(item.optBoolean("can_run")){gap(rows,12);rows.addView(compact(t(R.string.run_now),()->confirmTimer(item)),new LinearLayout.LayoutParams(-1,-2));}else{gap(rows,8);addText(rows,t(R.string.run_not_allowed),12,MUTED);}
             }else{
                 addText(rows,item.optString("mountpoint"),16,TEXT);gap(rows,8);double total=number(item,"total"),used=number(item,"used"),inodes=number(item,"inodes_total");
-                addText(rows,item.optString("device")+" · "+item.optString("filesystem")+"\n已用 "+bytes(used)+" / 总计 "+bytes(total)+" · "+percent(total>0?used/total*100:Double.NaN)+"\n可用 "+bytes(number(item,"available"))+"\ninode "+(inodes>0?decimal(number(item,"inodes_used"))+" / "+decimal(inodes)+" · "+percent(number(item,"inodes_used")/inodes*100):"暂不可用"),12,SECONDARY);
+                addText(rows,t(R.string.disk_detail,item.optString("device"),item.optString("filesystem"),bytes(used),bytes(total),percent(total>0?used/total*100:Double.NaN),bytes(number(item,"available")),inodes>0?item.optLong("inodes_used")+" / "+item.optLong("inodes_total")+" · "+percent(number(item,"inodes_used")/inodes*100):t(R.string.unavailable_now)),12,SECONDARY);
             }divider(rows);
         }
-        if(shown==0)addText(rows,q.isEmpty()?"暂无数据":"没有匹配结果",14,SECONDARY);
+        if(shown==0)addText(rows,q.isEmpty()?t(R.string.no_data):t(R.string.no_results),14,SECONDARY);
         if(kind.equals("disks")){
-            gap(rows,12);addText(rows,"受限目录扫描",15,TEXT);gap(rows,8);addText(rows,"仅服务器允许的目录 · 每次单独确认 · 刷新磁盘不会扫描",12,SECONDARY);gap(rows,12);
-            JSONArray roots=data.optJSONArray("scan_roots");if(roots==null||roots.length()==0)addText(rows,"服务器未开放目录扫描",12,MUTED);
-            if(roots!=null)for(int i=0;i<roots.length();i++){String path=roots.optString(i);rows.addView(compact("扫描 "+path,()->confirmScan(path)),new LinearLayout.LayoutParams(-1,-2));gap(rows,8);}
+            gap(rows,12);addText(rows,t(R.string.limited_scan),15,TEXT);gap(rows,8);addText(rows,t(R.string.scan_note),12,SECONDARY);gap(rows,12);
+            JSONArray roots=data.optJSONArray("scan_roots");if(roots==null||roots.length()==0)addText(rows,t(R.string.scan_disabled),12,MUTED);
+            if(roots!=null)for(int i=0;i<roots.length();i++){String path=roots.optString(i);rows.addView(compact(t(R.string.scan_path,path),()->confirmScan(path)),new LinearLayout.LayoutParams(-1,-2));gap(rows,8);}
         }
     }
     private void confirmTimer(JSONObject timer){
-        if(busy||ApiClient.MUTATING.get()){toast("正在处理请求，请稍候");return;}if(!timer.optBoolean("can_run"))return;
-        LinearLayout box=sheetBox("手动触发定时任务？");addText(box,"主机 · "+hostLabel(),14,MINT);gap(box,16);addText(box,timer.optString("name")+"\n触发单元 · "+timer.optString("unit"),16,TEXT);gap(box,16);addText(box,"服务器将重新检查触发单元和授权。接受启动不表示任务已完成。",14,SECONDARY);gap(box,24);
-        box.addView(button("确认触发",true,false,()->{String name=timer.optString("name");String path="/api/v1/timers/"+encodeSegment(name)+"/run";mutate(path,json("confirm",name),"任务启动已接受，不代表任务已完成",()->openTool("timers"),false);}),new LinearLayout.LayoutParams(-1,-2));showSheet(box);
+        if(busy||ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}if(!timer.optBoolean("can_run"))return;
+        LinearLayout box=sheetBox(t(R.string.run_title));addText(box,t(R.string.host_line,hostLabel()),14,MINT);gap(box,16);addText(box,t(R.string.timer_unit,timer.optString("name"),timer.optString("unit")),16,TEXT);gap(box,16);addText(box,t(R.string.run_warning),14,SECONDARY);gap(box,24);
+        box.addView(button(t(R.string.confirm_run),true,false,()->{String name=timer.optString("name");String path="/api/v1/timers/"+encodeSegment(name)+"/run";mutate(path,json("confirm",name),t(R.string.run_accepted),()->openTool("timers"),false);}),new LinearLayout.LayoutParams(-1,-2));showSheet(box);
     }
     private void confirmScan(String path){
-        if(busy||ApiClient.MUTATING.get()){toast("正在处理请求，请稍候");return;}LinearLayout box=sheetBox("确认只读目录扫描？");addText(box,"主机 · "+hostLabel(),14,MINT);gap(box,16);addText(box,path,18,TEXT);gap(box,16);
-        addText(box,"扫描可能产生磁盘 IO。最多 2 秒 / 10000 项 / 深度 6，不跟随符号链接或跨文件系统；服务器限制同时一次、冷却 15 秒。\n结果为逻辑字节数，可能仅是下界，不代表物理占用或可释放空间。",14,SECONDARY);gap(box,24);
-        box.addView(button("确认扫描一次",true,false,()->runScan(path)),new LinearLayout.LayoutParams(-1,-2));showSheet(box);
+        if(busy||ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}LinearLayout box=sheetBox(t(R.string.scan_title));addText(box,t(R.string.host_line,hostLabel()),14,MINT);gap(box,16);addText(box,path,18,TEXT);gap(box,16);
+        addText(box,t(R.string.scan_warning),14,SECONDARY);gap(box,24);
+        box.addView(button(t(R.string.confirm_scan),true,false,()->runScan(path)),new LinearLayout.LayoutParams(-1,-2));showSheet(box);
     }
     private void runScan(String path){
-        if(busy||ApiClient.MUTATING.get())return;LinearLayout box=sheetBox("扫描 · "+path);addText(box,"主机 · "+hostLabel(),12,SECONDARY);gap(box,12);TextView info=message(box);showMessage(info,"正在扫描 · 离开会取消本次读取，不自动重试",false);LinearLayout result=column();box.addView(result);showSheet(box);expandSheet();
-        toolRead("/api/v1/disk-scan",json("path",path),j->{showMessage(info,j.getBoolean("partial")?"部分结果 · 逻辑字节数仅为下界\n"+j.getString("reason"):"扫描完成 · 逻辑字节数",j.getBoolean("partial"));
-            addText(result,j.getString("path"),16,TEXT);gap(result,12);addText(result,bytes(number(j,"bytes"))+" · "+j.optLong("files")+" 个文件\n耗时 "+j.optLong("elapsed_ms")+" ms\n不代表物理占用或可释放空间；结果不会自动重试。",14,SECONDARY);divider(result);
-            JSONArray entries=j.getJSONArray("entries");ArrayList<JSONObject> sorted=new ArrayList<>();for(int i=0;i<entries.length();i++)sorted.add(entries.getJSONObject(i));sorted.sort((a,b)->Long.compare(b.optLong("bytes"),a.optLong("bytes")));addText(result,"目录条目 · 最大 20 项",12,MUTED);gap(result,12);for(int i=0;i<Math.min(20,sorted.size());i++){JSONObject entry=sorted.get(i);addText(result,entry.optString("name")+"\n"+bytes(number(entry,"bytes"))+" · "+entry.optLong("files")+" 个文件",14,TEXT);divider(result);}
-        },e->showMessage(info,e+"\n本次扫描不会自动重试。请返回磁盘页，确认后再发起。",true));
+        if(busy||ApiClient.MUTATING.get())return;LinearLayout box=sheetBox(t(R.string.scan_header,path));addText(box,t(R.string.host_line,hostLabel()),12,SECONDARY);gap(box,12);TextView info=message(box);showMessage(info,t(R.string.scanning),false);LinearLayout result=column();box.addView(result);showSheet(box);expandSheet();
+        toolRead("/api/v1/disk-scan",json("path",path),j->{showMessage(info,j.getBoolean("partial")?t(R.string.scan_partial,scanReasons(j.getString("reason"))):t(R.string.scan_complete),j.getBoolean("partial"));
+            addText(result,j.getString("path"),16,TEXT);gap(result,12);addText(result,t(R.string.scan_summary,bytes(number(j,"bytes")),files(j.optLong("files")),j.optLong("elapsed_ms")),14,SECONDARY);divider(result);
+            JSONArray entries=j.getJSONArray("entries");ArrayList<JSONObject> sorted=new ArrayList<>();for(int i=0;i<entries.length();i++)sorted.add(entries.getJSONObject(i));sorted.sort((a,b)->Long.compare(b.optLong("bytes"),a.optLong("bytes")));addText(result,t(R.string.scan_entries),12,MUTED);gap(result,12);for(int i=0;i<Math.min(20,sorted.size());i++){JSONObject entry=sorted.get(i);addText(result,entry.optString("name")+"\n"+bytes(number(entry,"bytes"))+" · "+files(entry.optLong("files")),14,TEXT);divider(result);}
+        },e->showMessage(info,t(R.string.scan_failed,e),true));
     }
 
     private void expandSheet(){if(sheet!=null&&sheet.getWindow()!=null)sheet.getWindow().setLayout(Math.min(getResources().getDisplayMetrics().widthPixels,dp(600)),(int)(getResources().getDisplayMetrics().heightPixels*.85));}
-    private LinearLayout sheetBox(String title){LinearLayout box=column();box.setPadding(dp(24),dp(12),dp(24),dp(24));View handle=new View(this);handle.setBackground(shape(MUTED,2,false));LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(dp(32),dp(4));hp.gravity=Gravity.CENTER_HORIZONTAL;hp.bottomMargin=dp(12);box.addView(handle,hp);LinearLayout top=row();TextView name=text(title,18,TEXT);name.setTextIsSelectable(true);weight(top,name);Button close=compact("关闭",()->{if(sheet!=null)sheet.dismiss();});close.setContentDescription("关闭操作层");LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(dp(64),-2);cp.leftMargin=dp(8);top.addView(close,cp);box.addView(top);gap(box,20);return box;}
+    private LinearLayout sheetBox(String title){LinearLayout box=column();box.setPadding(dp(24),dp(12),dp(24),dp(24));View handle=new View(this);handle.setBackground(shape(MUTED,2,false));LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(dp(32),dp(4));hp.gravity=Gravity.CENTER_HORIZONTAL;hp.bottomMargin=dp(12);box.addView(handle,hp);LinearLayout top=row();TextView name=text(title,18,TEXT);name.setTextIsSelectable(true);weight(top,name);Button close=compact(t(R.string.close),()->{if(sheet!=null)sheet.dismiss();});close.setContentDescription(t(R.string.close_sheet));LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(-2,-2);cp.leftMargin=dp(8);top.addView(close,cp);box.addView(top);gap(box,20);return box;}
     private void showSheet(LinearLayout box){
         if(sheet!=null)sheet.dismiss();handler.removeCallbacks(poll);resetRates();sheetGeneration++;
         Dialog d=new Dialog(this);d.setContentView(scroll(box));Window w=d.getWindow();
@@ -501,20 +512,51 @@ public final class MainActivity extends Activity {
         int max=(int)(getResources().getDisplayMetrics().heightPixels*.85);box.measure(View.MeasureSpec.makeMeasureSpec(Math.min(getResources().getDisplayMetrics().widthPixels,dp(600)),View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(0,View.MeasureSpec.UNSPECIFIED));if(w!=null)w.setLayout(Math.min(getResources().getDisplayMetrics().widthPixels,dp(600)),Math.min(box.getMeasuredHeight(),max));
     }
     private void mutate(String path,JSONObject body,String success,Runnable after,boolean power){
-        if(busy || config==null || !foreground || !ApiClient.MUTATING.compareAndSet(false,true)){toast("已有请求正在处理，请稍候");return;}
-        busy=true;handler.removeCallbacks(poll);final ApiClient.Config credentials=config;final State targetState=state;updateControls();if(sheet!=null)sheet.dismiss();toast("正在提交…");
+        if(busy || config==null || !foreground || !ApiClient.MUTATING.compareAndSet(false,true)){toast(t(R.string.busy_existing));return;}
+        busy=true;handler.removeCallbacks(poll);final ApiClient.Config credentials=config;final State targetState=state;updateControls();if(sheet!=null)sheet.dismiss();toast(t(R.string.submitting));
         final int gen=generation;
-        ApiClient.IO.execute(()->{String error=null;try{if(!RequestPolicy.current(foreground,generation,gen,config,credentials,false,0,0))throw new Exception("操作已取消，未发送");api.request(credentials,path,body,()->RequestPolicy.current(foreground,generation,gen,config,credentials,false,0,0));}catch(Exception e){error=e.getMessage()==null?"操作结果未确认，请刷新检查":ApiClient.redact(e.getMessage(),credentials);}final String problem=error;
+        ApiClient.IO.execute(()->{String error=null;try{if(!RequestPolicy.current(foreground,generation,gen,config,credentials,false,0,0))throw new Exception(t(R.string.op_cancelled));api.request(credentials,path,body,()->RequestPolicy.current(foreground,generation,gen,config,credentials,false,0,0));}catch(Exception e){error=e.getMessage()==null?t(R.string.op_unconfirmed):ApiClient.redact(e.getMessage(),credentials);}final String problem=error;
             runOnUiThread(()->{ApiClient.MUTATING.set(false);busy=false;MainActivity owner=targetState.owner;if(owner==null||owner.destroyed||!owner.foreground){targetState.notice=problem==null?success:problem;return;}
                 owner.processesFresh=false;owner.servicesFresh=false;
                 if(owner!=this||owner.config!=credentials||gen!=generation){owner.toast(problem==null?success:problem);owner.loadCurrent();return;}
-                if(problem==null){toast(success);after.run();}else{status(false);systemFresh=false;processesFresh=false;servicesFresh=false;systemError=problem;toast(problem);if(page==1)showMessage(processMessage,problem+" · 请刷新后检查",true);if(page==2)showMessage(serviceMessage,problem+" · 请刷新后检查",true);if(page==3)showMessage(settingsError,problem,true);updateDashboard();updatePower();}
+                if(problem==null){toast(success);after.run();}else{status(false);systemFresh=false;processesFresh=false;servicesFresh=false;systemError=problem;toast(problem);if(page==1)showMessage(processMessage,t(R.string.error_refresh_check,problem),true);if(page==2)showMessage(serviceMessage,t(R.string.error_refresh_check,problem),true);if(page==3)showMessage(settingsError,problem,true);updateDashboard();updatePower();}
                 updateControls();if(!power){if(loadPending){loadPending=false;loadCurrent();}else schedulePoll();}
             });
         });
     }
     private JSONObject json(String... pairs){JSONObject object=new JSONObject();try{for(int i=0;i<pairs.length;i+=2)object.put(pairs[i],pairs[i+1]);}catch(Exception ignored){}return object;}
     private void toast(String value){Toast.makeText(this,value,Toast.LENGTH_LONG).show();}
+    private static String t(int id,Object... args){return Text.get(id,args);}
+    private static String files(long count){return Text.plural(R.plurals.files_count,(int)Math.min(count,Integer.MAX_VALUE),count);}
+    private static final String[] SCAN_REASONS={"cancelled","time limit","entry limit","depth limit","permission or changed entry","changed entry","filesystem boundary","symlinks skipped","special files skipped","directory read error"};
+    private static final int[] SCAN_REASON_TEXT={R.string.reason_cancelled,R.string.reason_time,R.string.reason_entries,R.string.reason_depth,R.string.reason_permission,R.string.reason_changed,R.string.reason_boundary,R.string.reason_symlinks,R.string.reason_special,R.string.reason_read_error};
+    // Server reasons are stable English tokens; unknown ones are shown unchanged.
+    private static String scanReasons(String raw){StringBuilder out=new StringBuilder();for(String part:raw.split(",\\s*")){if(part.isEmpty())continue;String label=part;for(int i=0;i<SCAN_REASONS.length;i++)if(SCAN_REASONS[i].equals(part))label=t(SCAN_REASON_TEXT[i]);if(out.length()>0)out.append(t(R.string.list_separator));out.append(label);}return out.toString();}
+
+    private static final String[] LANGUAGES={"","zh-Hans","zh-Hant","en"};
+    private static String normalizeLanguage(Locale locale){
+        String language=locale.getLanguage();if(language.equals("en"))return "en";if(!language.equals("zh"))return locale.toLanguageTag();
+        String script=locale.getScript(),region=locale.getCountry();
+        return script.equals("Hant")||script.isEmpty()&&(region.equals("TW")||region.equals("HK")||region.equals("MO"))?"zh-Hant":"zh-Hans";
+    }
+    private String languageTag(){
+        if(Build.VERSION.SDK_INT>=33){LocaleList list=getSystemService(LocaleManager.class).getApplicationLocales();return list.isEmpty()?"":normalizeLanguage(list.get(0));}
+        return getSharedPreferences("ui",MODE_PRIVATE).getString("language","");
+    }
+    private String languageName(String tag){return tag.isEmpty()?t(R.string.language_system):tag.equals("zh-Hans")?t(R.string.lang_zh_hans):tag.equals("zh-Hant")?t(R.string.lang_zh_hant):tag.equals("en")?t(R.string.lang_en):Locale.forLanguageTag(tag).getDisplayName(Locale.forLanguageTag(tag));}
+    private void chooseLanguage(){
+        if(busy||ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}
+        LinearLayout box=sheetBox(t(R.string.language));addText(box,t(R.string.language_note),12,SECONDARY);gap(box,16);String current=languageTag();
+        for(String tag:LANGUAGES){boolean selected=tag.equals(current);Button choice=compact(languageName(tag)+(selected?"  ✓":""),()->setLanguage(tag));if(selected)choice.setTextColor(MINT);box.addView(choice,new LinearLayout.LayoutParams(-1,-2));gap(box,8);}
+        showSheet(box);
+    }
+    // Recreation keeps drafts and saved hosts through the retained State object.
+    private void setLanguage(String tag){
+        if(busy||ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}
+        if(sheet!=null)sheet.dismiss();if(tag.equals(languageTag()))return;
+        if(Build.VERSION.SDK_INT>=33){getSystemService(LocaleManager.class).setApplicationLocales(tag.isEmpty()?LocaleList.getEmptyLocaleList():LocaleList.forLanguageTags(tag));return;}
+        getSharedPreferences("ui",MODE_PRIVATE).edit().putString("language",tag).commit();recreate();
+    }
 
     private final class Meter extends View {
         final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);final int color;final String name;double value=Double.NaN;

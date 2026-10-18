@@ -20,7 +20,7 @@ public final class ProfileVaultTest extends Instrumentation {
     @Override public void onCreate(Bundle arguments){super.onCreate(arguments);start();}
     @Override public void onStart(){
         Bundle result=new Bundle();
-        try{setUp();testLegacyCiphertextMigrationAndIsolation();testCapabilityAndScanEnvelopes();testRequestBodiesAndErrors();result.putString("stream","PASS: encrypted migration, profile isolation, ciphertext integrity, tool envelopes, request bodies, 404, no retry\n");finish(Activity.RESULT_OK,result);}
+        try{setUp();testLegacyCiphertextMigrationAndIsolation();testCapabilityAndScanEnvelopes();testRequestBodiesAndErrors();testLocaleResolution();result.putString("stream","PASS: encrypted migration, profile isolation, ciphertext integrity, tool envelopes, request bodies, 404, no retry, locale resolution\n");finish(Activity.RESULT_OK,result);}
         catch(Throwable error){result.putString("stream","FAIL: "+error+"\n");finish(Activity.RESULT_CANCELED,result);}
         finally{if(preferences!=null)preferences.edit().clear().commit();}
     }
@@ -33,7 +33,7 @@ public final class ProfileVaultTest extends Instrumentation {
             @Override public Context getApplicationContext(){return this;}
             @Override public SharedPreferences getSharedPreferences(String name,int mode){return super.getSharedPreferences("v02-test-"+name,mode);}
         };
-        preferences=context.getSharedPreferences("vault",Context.MODE_PRIVATE);
+        Text.use(getTargetContext());preferences=context.getSharedPreferences("vault",Context.MODE_PRIVATE);
         assertTrue(preferences.edit().clear().commit());
     }
     public void testLegacyCiphertextMigrationAndIsolation() throws Exception {
@@ -66,6 +66,14 @@ public final class ProfileVaultTest extends Instrumentation {
         ToolData.validate("/api/v1/disk-scan",scan);
         scan.put("metric","physical");try{ToolData.validate("/api/v1/disk-scan",scan);fail("Unknown scan metric accepted");}catch(Exception expected){}
     }
+    public void testLocaleResolution() {
+        // Region-only Chinese locales must pick the matching script; unsupported languages fall back to English.
+        String[][] cases={{"zh-CN","轻舵 LiteHelm"},{"zh-SG","轻舵 LiteHelm"},{"zh-Hans","轻舵 LiteHelm"},{"zh-TW","輕舵 LiteHelm"},{"zh-HK","輕舵 LiteHelm"},{"zh-Hant","輕舵 LiteHelm"},{"en-US","LiteHelm"},{"fr-FR","LiteHelm"}};
+        for(String[] c:cases){android.content.res.Configuration config=new android.content.res.Configuration(getTargetContext().getResources().getConfiguration());config.setLocale(java.util.Locale.forLanguageTag(c[0]));
+            android.content.res.Resources r=getTargetContext().createConfigurationContext(config).getResources();
+            if(!c[1].equals(r.getString(R.string.app_name)))throw new AssertionError("Locale "+c[0]+" resolved to "+r.getString(R.string.app_name));
+            r.getString(R.string.disk_detail,"a","b","c","d","e","f","g");r.getQuantityString(R.plurals.files_count,2,2);}
+    }
     private static final class FakeConnection extends java.net.HttpURLConnection {
         final java.io.ByteArrayOutputStream sent=new java.io.ByteArrayOutputStream();String response="{\"ok\":true}";int code=200;
         FakeConnection(java.net.URL url){super(url);}
@@ -88,7 +96,7 @@ public final class ProfileVaultTest extends Instrumentation {
         client.request(config,"/api/v1/disk-scan",new JSONObject().put("path","/var/log"));
         assertEquals("/var/log",new JSONObject(last[0].sent.toString("UTF-8")).getString("path"));
         code[0]=404;int before=calls[0];
-        try{client.request(config,"/api/v1/ports",null);fail("404 accepted");}catch(Exception e){assertTrue(e.getMessage().contains("更新 LiteHelm 服务端"));}
+        try{client.request(config,"/api/v1/ports",null);fail("404 accepted");}catch(Exception e){assertEquals(Text.get(R.string.err_tool_unsupported),e.getMessage());}
         assertEquals(before+1,calls[0]);
         code[0]=429;response[0]="{\"error\":\"cooldown secret-test-token\"}";before=calls[0];
         try{client.request(config,"/api/v1/disk-scan",new JSONObject().put("path","/var/log"));fail("429 accepted");}catch(Exception e){assertTrue(e.getMessage().contains("429"));assertFalse(e.getMessage().contains(config.token));}

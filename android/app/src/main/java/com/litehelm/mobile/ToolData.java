@@ -8,7 +8,7 @@ final class ToolData {
     static void validate(String path,JSONObject data) throws Exception {
         if(path.equals("/api/v1/disk-scan")) {
             data.getString("path");data.getLong("bytes");data.getLong("files");data.getJSONArray("entries");data.getBoolean("partial");data.getString("reason");data.getLong("elapsed_ms");
-            if(!"logical_bytes".equals(data.getString("metric")))throw new Exception("扫描计量格式不受支持");
+            if(!"logical_bytes".equals(data.getString("metric")))throw new Exception(Text.get(R.string.err_scan_metric));
         }else if(path.equals("/api/v1/disks")) {
             data.getJSONArray("disks");data.getJSONArray("scan_roots");data.getBoolean("truncated");
         }else {
@@ -19,7 +19,7 @@ final class ToolData {
             }
         }
     }
-    static String available(String value){return value.isEmpty()?"不可用":value;}
+    static String available(String value){return value.isEmpty()?Text.get(R.string.unavailable):value;}
     static String searchText(String kind,JSONObject item){
         if(kind.equals("ports"))return item.optString("address")+" "+item.optString("process")+" "+item.optString("service")+" "+item.optString("pid");
         if(kind.equals("timers"))return item.optString("name")+" "+item.optString("description")+" "+item.optString("unit");

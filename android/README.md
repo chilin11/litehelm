@@ -1,6 +1,6 @@
-# 轻舵 · LiteHelm Android v0.2
+# 轻舵 · LiteHelm Android v0.2.1
 
-原生 Java Views，零第三方运行时依赖。最低 Android 8.0（API 26），编译/目标 API 35；应用 ID `com.litehelm.mobile`。版本 `versionCode 2 / versionName 0.2.0`。
+原生 Java Views，零第三方运行时依赖。最低 Android 8.0（API 26），编译/目标 API 35；应用 ID `com.litehelm.mobile`。版本 `versionCode 3 / versionName 0.2.1`。
 
 ## 构建
 
@@ -12,6 +12,12 @@ export ANDROID_HOME="$HOME/Library/Android/sdk"
 ```
 
 Gradle wrapper 8.11.1 / AGP 8.7.3，离线构建需要已有本机缓存。主 APK：`app/build/outputs/apk/debug/app-debug.apk`；测试 APK：`app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk`。Debug 使用现有调试签名，正式签名由发布流程配置。
+
+## 语言
+
+- 简体中文（`values-zh`）、繁體中文（`values-b+zh+Hant`，含 zh-TW/zh-HK）和 English（默认 `values`）。其他系统语言回退到 English。
+- 默认跟随系统；设置页“语言”可切换。Android 13+ 通过 `LocaleManager` 写入系统应用语言（`locales_config.xml` 同步出现在系统设置中）；Android 8–12 保存在本地 `ui` 偏好并以配置覆盖重建界面。切换在请求或写入进行中被拒绝，草稿和已保存主机保留。
+- 所有界面文本、提示和后台错误都在 `strings.xml`（`Text` 供无 Context 的请求代码使用）；服务端错误原文显示，已知的扫描限制原因在客户端翻译。App Bundle 关闭语言拆分，保证应用内切换可用。
 
 ## 多主机与连接
 
@@ -38,18 +44,12 @@ Gradle wrapper 8.11.1 / AGP 8.7.3，离线构建需要已有本机缓存。主 A
 
 ## 验证
 
-依赖纯 JDK 的主机端测试（在仓库根目录执行）：
+依赖纯 JDK 的主机端测试（仓库根目录）：`sh scripts/test-android-policy.sh`，覆盖连接身份与代次失效、后台/页面/弹层轮询矩阵、日志原文保持和本地匹配；CI 与发布流程都会运行。
 
-```sh
-test_classes=$(mktemp -d "$PI_SCRATCH_DIR/litehelm-tests.XXXXXX")
-"$JAVA_HOME/bin/javac" -d "$test_classes" android/app/src/main/java/com/litehelm/mobile/RequestPolicy.java android/app/src/main/java/com/litehelm/mobile/LogFilter.java android/tests/HostTests.java
-"$JAVA_HOME/bin/java" -cp "$test_classes" com.litehelm.mobile.HostTests
-```
-
-覆盖连接身份与代次失效、后台/页面/弹层轮询矩阵、日志原文保持和本地匹配。Android 平台 Instrumentation 测试无外部测试依赖，覆盖真正 Keystore 加密 v1 迁移、重载稳定 ID/活动主机/收藏隔离、密文篡改拒绝、能力信封、timer/scan 请求体、404、429 不重试、日志上限。使用独立 `v02-test-vault` preferences，不清理真实凭据。需主维护者在明确选择的设备安装主 APK 和测试 APK 后执行：
+Android 平台 Instrumentation 无外部测试依赖，覆盖 Keystore 加密 v1 迁移、稳定 ID/活动主机/收藏隔离、密文篡改拒绝、能力信封、timer/scan 请求体、404、429 不重试、日志上限，以及 zh-CN/zh-SG/zh-TW/zh-HK/zh-Hans/zh-Hant/en/fr 的资源解析。使用独立 `v02-test-vault` preferences，不清理真实凭据。在明确选择的设备安装主 APK 和测试 APK 后执行：
 
 ```sh
 adb -s DEVICE_SERIAL shell am instrument -w com.litehelm.mobile.test/com.litehelm.mobile.ProfileVaultTest
 ```
 
-本次未操作共享模拟器；Instrumentation 仅编译打包，未运行。真实 HTTPS 联调、设备上的快速切换/旋转/后台、320dp/200% 字体与 TalkBack 仍需设备验收。构建和主机端策略测试无法代替真实网络与界面交互测试。
+已在模拟器运行通过；双 HTTPS 模拟主机联调、语言切换、320dp/200% 字体与底部导航对齐的检查结果见仓库根目录 `VERIFICATION.md`。TalkBack 人工验收与真实外网 HTTPS 联调尚未完成。

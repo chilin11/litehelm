@@ -6,11 +6,13 @@ android {
         applicationId 'com.litehelm.mobile'
         minSdk 26
         targetSdk 35
-        versionCode 2
-        versionName '0.2.0'
+        versionCode 3
+        versionName '0.2.1'
         testInstrumentationRunner 'com.litehelm.mobile.ProfileVaultTest'
     }
     buildFeatures { buildConfig true }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
     buildTypes { release { minifyEnabled false } }
+    // In-app language switching needs every translation in the installed package.
+    bundle { language { enableSplit = false } }
 }
