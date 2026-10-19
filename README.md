@@ -36,7 +36,7 @@ sudo cat /etc/litehelm/token
 指定版本或离线安装：
 
 ```sh
-sudo sh litehelm-install.sh --version v0.3.0
+sudo sh litehelm-install.sh --version v0.3.1
 # 从同一 Release 下载本机架构程序和 SHA256SUMS，放在同一目录：
 sudo sh litehelm-install.sh --local-dir ./downloads
 ```
@@ -89,7 +89,7 @@ sudo sh install.sh --enable-exec    # 开启，保留令牌与现有配置
 sudo sh install.sh --disable-exec   # 关闭
 ```
 
-开启会添加 `20-litehelm-exec.conf`（`LITEHELM_ALLOW_EXEC=1`、`StateDirectory=litehelm`）；之后不带参数重装保持当前开关不变。手动运行可用 `-allow-exec` 与 `-jobs-dir`。App 入口：主机工具 → 运行脚本。
+开启会添加 `20-litehelm-exec.conf`（`LITEHELM_ALLOW_EXEC=1`、`StateDirectory=litehelm`）；之后不带参数重装保持当前开关不变。手动运行可用 `-allow-exec` 与 `-jobs-dir`。App 入口：底部导航「脚本」页。
 
 - **root + systemd**：每个脚本是独立的临时 unit `litehelm-job-<ID>.service`，不受 LiteHelm 沙箱与 capabilities 限制，可写 `/etc`、`/usr`、`/opt`；LiteHelm 重启或升级不会中断任务。工作目录为 root 家目录。服务页不能停止这些 unit，请在任务页取消。
 - **非 root 运行 LiteHelm**：脚本是 LiteHelm 的子进程组，权限与该用户相同，并继承 unit 沙箱（如 `ProtectSystem=strict`、`ProtectHome=read-only`）；需写入的路径请用 drop-in 的 `ReadWritePaths=` 放行。LiteHelm 重启会中断任务，记录显示“丢失”。

@@ -13,10 +13,13 @@ public final class HostTests {
         check(!RequestPolicy.current(true,3,3,hostA,hostA,true,5,4));
         check(RequestPolicy.current(true,3,3,hostA,hostA,false,5,4));
         check(RequestPolicy.current(true,3,3,hostA,hostA,true,4,4));
-        for(int page=0;page<4;page++)for(int mask=0;mask<32;mask++) {
-            boolean fg=(mask&1)!=0,configured=(mask&2)!=0,busy=(mask&4)!=0,mutating=(mask&8)!=0,sheet=(mask&16)!=0;
+        for(int page=0;page<5;page++)for(int mask=0;mask<64;mask++) {
+            boolean fg=(mask&1)!=0,configured=(mask&2)!=0,busy=(mask&4)!=0,mutating=(mask&8)!=0,sheet=(mask&16)!=0,following=(mask&32)!=0;
             boolean allowed=RequestPolicy.poll(fg,page,configured,busy,mutating,sheet);
             check(allowed==(page==0&&fg&&configured&&!busy&&!mutating&&!sheet));
+            boolean job=RequestPolicy.jobPoll(fg,page,configured,busy,mutating,sheet,following);
+            check(job==(page==RequestPolicy.SCRIPTS_PAGE&&fg&&configured&&!busy&&!mutating&&!sheet&&following));
+            check(!(allowed&&job));
         }
         String original="Error ERROR\nnormal line\n错误: error\n";
         LogFilter.Result all=LogFilter.filter(original,"");check(all.visible.equals(original));check(all.matches==0);

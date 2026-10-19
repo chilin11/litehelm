@@ -1,6 +1,6 @@
-# 轻舵 · LiteHelm Android v0.3.0
+# 轻舵 · LiteHelm Android v0.3.1
 
-原生 Java Views，零第三方运行时依赖。最低 Android 8.0（API 26），编译/目标 API 35；应用 ID `com.litehelm.mobile`。版本 `versionCode 4 / versionName 0.3.0`。
+原生 Java Views，零第三方运行时依赖。最低 Android 8.0（API 26），编译/目标 API 35；应用 ID `com.litehelm.mobile`。版本 `versionCode 5 / versionName 0.3.1`。
 
 ## 构建
 
@@ -31,6 +31,7 @@ Gradle wrapper 8.11.1 / AGP 8.7.3，离线构建需要已有本机缓存。主 A
 
 - 服务详情收藏/取消收藏，每主机最多 12 项，按稳定 profile ID 隔离。概览不显示缓存健康状态；点击收藏先获取新 `/system` 与 `/services` 后才开放动作，不随 5 秒轮询查询服务。
 - 日志手动获取，保留最多 64 KiB 原文。本地大小写不敏感搜索按行筛选并统计匹配次数；清空查询恢复原文。仅明确点击才复制可见/全部原文到系统剪贴板，界面提示其他应用可能读取。
+- 脚本任务在底部「脚本」页：编辑与最近任务同页，点任务原地查看详情，仅详情可见且任务运行中时每 2 秒增量读取输出。
 - 概览和服务页工具菜单本身不发请求。选择监听端口、systemd 定时任务、磁盘后单次读取对应 JSON API，仅手动刷新，可本地搜索。unsupported 和空结果分开展示；新接口 404 明确提示更新 LiteHelm 服务端。
 - 定时任务仅 `can_run=true` 显示触发按钮，确认完整主机、timer、unit 后 POST `{confirm: timer}`；接受启动不代表作业完成。
 - 磁盘显示容量/可用量/inode（总数零显示不可用）。只能选择服务器返回的 `scan_roots`，扫描前明确确认只读 IO、时间/条目/深度及冷却限制。POST `{path: root}`，显示按逻辑字节降序前 20 项；`partial` 与原因突出显示、结果为下界，不代表物理占用/可释放空间。刷新磁盘不会重新扫描，429/失败不自动重试，无删除操作。

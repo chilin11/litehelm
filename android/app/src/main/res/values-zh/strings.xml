@@ -35,6 +35,7 @@
     <string name="nav_overview">概览</string>
     <string name="nav_processes">进程</string>
     <string name="nav_services">服务</string>
+    <string name="nav_scripts">脚本</string>
     <string name="nav_settings">设置</string>
     <string name="process">进程</string>
     <string name="connect_first">请先连接你的服务器</string>
@@ -271,8 +272,6 @@
     <string name="language_button">语言 · %1$s</string>
     <string name="language_system">跟随系统</string>
     <string name="language_note">仅对本应用生效；服务端返回的提示按原文显示。</string>
-    <string name="scripts_menu">运行脚本</string>
-    <string name="scripts_title">脚本任务</string>
     <string name="exec_disabled">此服务器未开启脚本执行。</string>
     <string name="exec_enable_hint">在服务器上开启：sudo sh install.sh --enable-exec</string>
     <string name="exec_identity">以 %1$s 身份运行 · %2$s</string>
@@ -319,7 +318,17 @@
     <string name="job_deleted">任务记录已删除</string>
     <string name="rerun_job">编辑后重新运行</string>
     <string name="copy_output">复制输出</string>
-    <string name="job_list">全部任务</string>
+    <string name="job_started_limit">开始于 %1$s · 上限 %2$s</string>
+    <string name="job_row_detail">%1$s · 上限 %2$s</string>
+    <string name="scripts_subtitle">在当前主机运行命令 · 手动刷新</string>
+    <string name="new_script">新建脚本</string>
+    <string name="clear_script">清空脚本草稿</string>
+    <string name="manual_refresh">手动刷新</string>
+    <string name="back_to_jobs">‹ 全部任务</string>
+    <string name="rerun_loaded">已载入编辑区，检查后再运行</string>
+    <string name="delete_job_title">删除这条任务记录？</string>
+    <string name="delete_job_warning">将从服务器删除保存的脚本和输出，无法恢复。</string>
+    <string name="clipboard_output_warning">复制会把输出放入系统剪贴板，可能被其他应用读取。</string>
     <plurals name="resources_cores">
         <item quantity="other">资源 / %1$d 核</item>
     </plurals>

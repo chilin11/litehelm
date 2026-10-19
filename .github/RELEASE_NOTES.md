@@ -1,16 +1,9 @@
-轻舵 · LiteHelm v0.3.0：新增“运行脚本”，可在手机上让服务器执行部署等一次性 Shell 脚本。
+轻舵 · LiteHelm v0.3.1：脚本独立成页，操作更直接。
 
-- 主机工具 → 运行脚本：粘贴/编辑脚本，选择时间上限（5 分钟–24 小时），确认后运行；任务页实时显示输出、退出码，可取消、复制输出、编辑后重跑、删除记录。
-- **默认关闭**。开启后令牌等同于服务用户（默认 root）的 shell，请只在需要时开启：`sudo sh litehelm-install.sh --enable-exec`，关闭用 `--disable-exec`；之后普通更新保持当前开关。
-- root + systemd 下每个脚本是独立的临时 unit，不受 LiteHelm 沙箱限制，LiteHelm 重启或升级不会中断任务；非 root 运行时脚本作为子进程，继承服务沙箱。
-- 脚本不可交互（标准输入为空），后台进程随脚本结束；常驻程序请交给 systemd 或容器。服务器保留最近 30 条记录，最多 4 个同时运行。
-- 需要同时更新服务端与 App；旧服务端会提示不支持。
+- 底部导航新增「脚本」（概览 / 进程 / 服务 / 脚本 / 设置），不再藏在“主机工具”弹层里。
+- 同一页完成编辑、运行和查看：上方新建脚本，下方最近任务；点任务在页内看状态和实时输出，「‹ 全部任务」或返回键回到列表。
+- 编辑后重新运行直接把脚本、名称、时间上限填回编辑区；删除记录新增确认；脚本页禁止截屏。
+- 只有任务详情可见且任务运行中才每 2 秒读取输出，离开即停止。
+- 服务端与 API 未变，v0.3.0 服务端无需更新；只需安装新 APK。
 
-更新服务端（保留令牌、unit 与 drop-in）：
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/chilin11/litehelm/main/install.sh -o litehelm-install.sh
-sudo sh litehelm-install.sh --enable-exec   # 不需要脚本功能就去掉 --enable-exec
-```
-
-`LiteHelm-release.apk` 使用固定签名，可直接覆盖 v0.2.1 并保留已保存的主机。之前从 GitHub 下载的 v0.1.0 / v0.2.0 使用临时签名，需先卸载一次。详见 README 与 VERIFICATION.md。
+`LiteHelm-release.apk` 使用固定签名，可直接覆盖 v0.2.1 / v0.3.0 并保留已保存的主机。脚本功能仍需服务端开启：`sudo sh litehelm-install.sh --enable-exec`。
