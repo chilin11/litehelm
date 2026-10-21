@@ -20,6 +20,8 @@ jobs:
       - uses: android-actions/setup-android@v3
         with:
           packages: platform-tools
+      - name: Check web UI syntax
+        run: for f in server/web/*.js; do m="$RUNNER_TEMP/$(basename "$f" .js).mjs"; cp "$f" "$m"; node --check "$m"; done
       - name: Test and build
         run: |
           sdkmanager 'platforms;android-35' 'build-tools;35.0.0'

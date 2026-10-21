@@ -15,6 +15,8 @@ jobs:
         with:
           go-version-file: server/go.mod
           cache-dependency-path: server/go.sum
+      - name: Check web UI syntax
+        run: for f in server/web/*.js; do m="$RUNNER_TEMP/$(basename "$f" .js).mjs"; cp "$f" "$m"; node --check "$m"; done
       - name: Test and vet
         working-directory: server
         run: |

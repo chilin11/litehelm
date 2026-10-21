@@ -1,5 +1,12 @@
 # 已做检查与限制
 
+## v0.4 网页版（同端口）
+
+- 服务端：`golang:1.24` 容器内 `go test -race`、`go vet`、gofmt 通过；新增 4 组测试覆盖静态资源类型/安全头/ETag/HEAD/路径穿越 404/非 GET 405、`-web=false` 时 API 仍可用、`/api` 前缀一律鉴权、同源规则（无 Origin、同 Host、大小写、Sec-Fetch-Site same-origin 放行；跨站、同站子域、`null`、端口不同 403；同源无令牌 401）。
+- 真实 systemd（Debian 12 arm64 特权容器）：`scripts/test-install.sh` 全部通过，新增网页默认开启、同源/跨源检查及 `--disable-web` → 不带参数重装保持 → `--enable-web` 往返；ShellCheck 通过。
+- 浏览器：headless Chrome 经测试反代（保留 Host）访问容器内真实服务，桌面 1440/1024、手机 390/320 宽、简/繁/英三语言逐页无横向溢出、无控制台错误；真实流程通过：令牌登录、概览网速第二样本、运行脚本（确认层→实时输出→退出码 3 显示失败）、服务重启确认、白名单 timer 手动触发、`/var/log` 受限扫描（部分结果原因本地化）、进程 TERM/KILL 确认层。
+- 未验证：真实 HTTPS 反向代理与公网；Safari/Firefox；Android App 本身未改动（不发送 Origin，API 不变）。
+
 ## v0.3.1 脚本独立页面（App versionCode 5）
 
 - 脚本从“主机工具”弹层移到底部第 5 个导航页（概览 / 进程 / 服务 / 脚本 / 设置），编辑区、最近任务、任务详情都在页面内，确认层保持不变；工具弹层只剩端口、定时任务、磁盘。服务端与 API 未改动。

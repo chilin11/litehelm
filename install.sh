@@ -5,16 +5,19 @@ REPO=chilin11/litehelm
 VERSION=latest
 LOCAL_DIR=
 EXEC=keep
+WEB=keep
 usage() {
  cat <<'HELP'
 LiteHelm · 轻舵
-Usage: sudo sh install.sh [--version vX.Y.Z] [--local-dir DIRECTORY] [--enable-exec|--disable-exec]
+Usage: sudo sh install.sh [--version vX.Y.Z] [--local-dir DIRECTORY] [--enable-exec|--disable-exec] [--disable-web|--enable-web]
   --version       Install a specific GitHub release (default: latest)
   --local-dir     Use binaries and SHA256SUMS from a local directory
   --enable-exec   Allow the app to run arbitrary scripts as the service user (root by default)
   --disable-exec  Remove script execution again
+  --disable-web   Stop serving the built-in web UI (API for the app is unaffected)
+  --enable-web    Serve the built-in web UI again (default)
   --help          Show help without changing anything
-Existing token, service unit and drop-ins are preserved; script execution is unchanged unless requested.
+Existing token, service unit and drop-ins are preserved; script execution and web UI are unchanged unless requested.
 HELP
 }
 while [ "$#" -gt 0 ]; do
@@ -22,6 +25,8 @@ while [ "$#" -gt 0 ]; do
   --version|--local-dir) [ "$#" -ge 2 ] || { usage; exit 1; }; opt=$1; shift; if [ "$opt" = --version ]; then VERSION=$1; else LOCAL_DIR=$1; fi;;
   --enable-exec) EXEC=on;;
   --disable-exec) EXEC=off;;
+  --disable-web) WEB=off;;
+  --enable-web) WEB=on;;
   --help|-h) usage; exit 0;;
   *) echo "Unknown option: $1" >&2; usage; exit 1;;
  esac
@@ -135,6 +140,17 @@ if [ "$EXEC" = on ]; then
 elif [ "$EXEC" = off ]; then
  rm -f "$exec_conf"
 fi
+# The web UI is on by default; a managed drop-in turns it off.
+web_conf=/etc/systemd/system/litehelm.service.d/30-litehelm-web.conf
+had_web=false
+if [ -e "$web_conf" ]; then cp -p "$web_conf" "$tmp/web.conf"; had_web=true; fi
+if [ "$WEB" = off ]; then
+ install -d -m 755 /etc/systemd/system/litehelm.service.d
+ printf '%s\n' '[Service]' '# Managed by install.sh --disable-web: only the /api/v1 API is served.' 'Environment=LITEHELM_WEB=0' > "$web_conf"
+ chmod 644 "$web_conf"
+elif [ "$WEB" = on ]; then
+ rm -f "$web_conf"
+fi
 rollback() {
  echo 'Startup failed; restoring previous binary and service state' >&2
  systemctl stop litehelm.service || true
@@ -142,6 +158,7 @@ rollback() {
  if [ "$had_unit" = false ]; then rm -f /etc/systemd/system/litehelm.service; fi
  if [ "$added_compat" = true ]; then rm -f "$compat"; fi
  if [ "$had_exec" = true ]; then cp -p "$tmp/exec.conf" "$exec_conf"; else rm -f "$exec_conf"; fi
+ if [ "$had_web" = true ]; then cp -p "$tmp/web.conf" "$web_conf"; else rm -f "$web_conf"; fi
  systemctl daemon-reload || true
  if [ "$was_active" = true ]; then systemctl start litehelm.service || true; fi
  echo 'Token has been preserved. Inspect: journalctl -u litehelm -n 40 --no-pager' >&2
@@ -153,5 +170,6 @@ systemctl restart litehelm.service || rollback
 sleep 2
 systemctl is-active --quiet litehelm.service || rollback
 systemctl enable litehelm.service
-printf '%s\n' 'LiteHelm is running at http://127.0.0.1:9091' 'Publish this local endpoint using your HTTPS reverse proxy.' 'Read the token locally: sudo cat /etc/litehelm/token' 'Existing token, unit and user drop-ins were preserved; managed openat2 compatibility setting installed.'
+printf '%s\n' 'LiteHelm is running at http://127.0.0.1:9091' 'Publish this local endpoint using your HTTPS reverse proxy; the same origin serves the app API and the web UI.' 'Read the token locally: sudo cat /etc/litehelm/token' 'Existing token, unit and user drop-ins were preserved; managed openat2 compatibility setting installed.'
 if [ -e "$exec_conf" ]; then echo 'Script execution: enabled (disable with --disable-exec)'; else echo 'Script execution: disabled (enable with --enable-exec)'; fi
+if [ -e "$web_conf" ]; then echo 'Web UI: disabled (enable with --enable-web)'; else echo 'Web UI: enabled at your HTTPS origin (disable with --disable-web)'; fi

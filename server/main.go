@@ -42,6 +42,8 @@ type app struct {
 	// jobs is nil unless -allow-exec is set and the jobs directory is usable.
 	jobs       *jobRunner
 	execReason string
+	// web serves the embedded browser UI on non-API paths of the same listener.
+	web bool
 }
 
 func main() {
@@ -51,6 +53,7 @@ func main() {
 	allowExec := flag.Bool("allow-exec", os.Getenv("LITEHELM_ALLOW_EXEC") == "1", "enable arbitrary script jobs as the LiteHelm user (also LITEHELM_ALLOW_EXEC=1)")
 	jobsFlag := flag.String("jobs-dir", "", "script job directory (default $STATE_DIRECTORY/jobs or /var/lib/litehelm/jobs)")
 	generate := flag.Bool("generate-token", false, "print a new random token and exit")
+	web := flag.Bool("web", os.Getenv("LITEHELM_WEB") != "0", "serve the built-in web UI on the same address (disable with -web=false or LITEHELM_WEB=0)")
 	flag.Parse()
 	if *generate {
 		b := make([]byte, 32)
@@ -79,7 +82,7 @@ func main() {
 	if len(token) < 32 {
 		log.Fatal("token must contain at least 32 characters; use -generate-token")
 	}
-	a := &app{token: sha256.Sum256([]byte(token)), power: *power, slots: make(chan struct{}, 2), unit: os.Getenv("LITEHELM_UNIT")}
+	a := &app{token: sha256.Sum256([]byte(token)), power: *power, slots: make(chan struct{}, 2), unit: os.Getenv("LITEHELM_UNIT"), web: *web}
 	if a.unit == "" {
 		a.unit = "litehelm.service"
 	}
@@ -104,7 +107,7 @@ func main() {
 	if a.jobs != nil {
 		execMode = a.jobs.mode() + " as " + a.jobs.user
 	}
-	log.Printf("LiteHelm listening on %s (power=%t exec=%s)", *listen, *power, execMode)
+	log.Printf("LiteHelm listening on %s (power=%t exec=%s web=%t)", *listen, *power, execMode, *web)
 	if e := srv.ListenAndServe(); e != nil && !errors.Is(e, http.ErrServerClosed) {
 		log.Fatal(e)
 	}
@@ -118,11 +121,19 @@ func fail(w http.ResponseWriter, status int, msg string) {
 	output(w, status, map[string]string{"error": msg})
 }
 func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	p := r.URL.Path
+	// One listener, split by path: /api/ is the JSON protocol for the app and the
+	// web UI; everything else is the embedded static web UI (no data, no auth).
+	if p != "/api" && !strings.HasPrefix(p, "/api/") {
+		a.serveWeb(w, r)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	// Bearer only; never cookie-authenticate or enable cross-origin browser requests.
-	if r.Header.Get("Origin") != "" {
+	// Bearer only; never cookie-authenticate or enable CORS. Browsers may call the
+	// API only from the same origin (the built-in web UI).
+	if o := r.Header.Get("Origin"); o != "" && !sameOrigin(r, o) {
 		fail(w, 403, "Browser cross-origin requests are disabled")
 		return
 	}
@@ -150,7 +161,6 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		defer a.mutation.Unlock()
 	}
-	p := r.URL.Path
 	switch {
 	case p == "/api/v1/system" && r.Method == "GET":
 		a.system(w, r)

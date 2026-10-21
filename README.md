@@ -1,14 +1,17 @@
 # 轻舵 · LiteHelm
 
-**给小服务器用的手机管理工具。** 原生 Android App + 单文件 Go 服务端，查看状态、结束进程、管理服务，随手打开即可操作。
+**给小服务器用的手机管理工具。** 原生 Android App + 单文件 Go 服务端（内置网页版），查看状态、结束进程、管理服务，随手打开即可操作。
 
-- 无需 Docker、数据库、服务器网页运行时。
+- 无需 Docker、数据库或单独的网页运行时；网页版静态文件编译进同一个程序。
+- **同一个地址两种用法**：App 填 `https://server.example.com`，浏览器直接打开同一地址就是网页版，功能与 App 一致，电脑大屏多栏显示。
 - 首页只在前台每 5 秒刷新，进程、服务和日志按需读取；退到后台停止请求。
 - 深色原生手机界面，支持搜索、排序、日志查看和操作确认；简体中文 / 繁體中文 / English，默认跟随系统，可在设置中切换。
 - 标准 HTTPS + Bearer Token，可接入你自己的反向代理。
 
 ```text
-Android App ── HTTPS + Token ── 你的反向代理 ── http://127.0.0.1:9091
+Android App ─┐
+             ├─ HTTPS + Token ── 你的反向代理 ── http://127.0.0.1:9091
+浏览器网页 ──┘   /api/v1/* → JSON API（令牌）   其他路径 → 内置网页
 ```
 
 [下载 APK 和服务端](https://github.com/chilin11/litehelm/releases/latest) · [协议](API.md) · [设计](DESIGN.md) · [验证记录](VERIFICATION.md) · [功能路线图](ROADMAP.md)
@@ -36,7 +39,7 @@ sudo cat /etc/litehelm/token
 指定版本或离线安装：
 
 ```sh
-sudo sh litehelm-install.sh --version v0.3.1
+sudo sh litehelm-install.sh --version v0.4.0
 # 从同一 Release 下载本机架构程序和 SHA256SUMS，放在同一目录：
 sudo sh litehelm-install.sh --local-dir ./downloads
 ```
@@ -67,6 +70,24 @@ Environment="LITEHELM_PROTECTED_SERVICES=my-agent,my-proxy"
 ```
 
 修改后执行 `sudo systemctl daemon-reload && sudo systemctl restart litehelm`。前缀匹配，不区分大小写。
+
+## 网页版
+
+服务端在同一端口按路径区分：`/api/v1/*` 是 App 与网页共用的 JSON API（必须带 Bearer 令牌）；其他路径返回内置网页。反向代理无需改动，浏览器打开 App 填写的同一个 HTTPS 地址，输入令牌即可。
+
+- 页面：概览（资源、网速、收藏服务、快捷入口）、进程、服务（筛选/详情/启停/日志搜索复制）、定时任务、端口、磁盘与受限扫描、脚本、设置（能力、语言、电源）。电脑侧栏 + 双栏详情；手机底部导航，和 App 同一套颜色。
+- 简体中文 / 繁體中文 / English，跟随浏览器，可在设置切换。
+- 令牌默认只保存到关闭标签页（sessionStorage），勾选“在此浏览器记住”才写入 localStorage；不使用 Cookie，因此没有 CSRF 面。收藏服务保存在浏览器本地。
+- 浏览器请求只允许同源：`Sec-Fetch-Site: same-origin` 或 `Origin` 与请求 Host 一致，其余带 `Origin` 的请求 403。代理需保留原始 `Host`（Caddy/nginx `proxy_set_header Host $host` 等默认做法）。App 不发送 `Origin`，不受影响。
+- 网页响应带严格 CSP（仅本站脚本/样式，无内联脚本、无第三方资源）、`frame-ancestors 'none'`、`no-referrer`。网页本身不含数据，无需令牌即可加载。
+- 不需要网页时关闭（API 不受影响）：
+
+```sh
+sudo sh install.sh --disable-web   # 添加 30-litehelm-web.conf（LITEHELM_WEB=0）
+sudo sh install.sh --enable-web    # 恢复默认开启
+```
+
+手动运行可用 `-web=false`。之后不带参数重装保持当前开关。
 
 ## 主机重启 / 关机
 

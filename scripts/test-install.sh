@@ -146,6 +146,44 @@ print('Script jobs: root deploy outside sandbox, exit code, restart survival, ca
 PY
 sh "$base/install.sh" --local-dir "$base/dist" --disable-exec
 [ ! -e /etc/systemd/system/litehelm.service.d/20-litehelm-exec.conf ]
+# Web UI: on by default, same listener as the API; --disable-web keeps the API.
+http_code() {
+ python3 - "$1" "${2:-}" <<'PY'
+import sys, urllib.request, urllib.error
+from pathlib import Path
+h={'Authorization':'Bearer '+Path('/etc/litehelm/token').read_text().strip()} if sys.argv[2] else {}
+try: print(urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:9091'+sys.argv[1],headers=h),timeout=20).status)
+except urllib.error.HTTPError as e: print(e.code)
+PY
+}
+python3 - <<'PY'
+import json, urllib.request, urllib.error
+from pathlib import Path
+token=Path('/etc/litehelm/token').read_text().strip()
+def get(path, headers=None):
+ r=urllib.request.Request('http://127.0.0.1:9091'+path, headers=headers or {})
+ try:
+  with urllib.request.urlopen(r,timeout=20) as v: return v.status, v.headers, v.read()
+ except urllib.error.HTTPError as e: return e.code, e.headers, e.read()
+code,h,body=get('/')
+assert code==200 and h['Content-Type'].startswith('text/html') and b'app.js' in body, (code,h)
+assert "script-src 'self'" in h['Content-Security-Policy'] and h['X-Frame-Options']=='DENY'
+assert get('/app.js')[0]==200 and get('/missing')[0]==404
+assert get('/api/v1/system')[0]==401
+auth={'Authorization':'Bearer '+token}
+assert get('/api/v1/system', dict(auth, Origin='http://127.0.0.1:9091'))[0]==200
+assert get('/api/v1/system', dict(auth, Origin='https://evil.example'))[0]==403
+print('Web UI default on, same-origin API, cross-origin rejected: PASS')
+PY
+sh "$base/install.sh" --local-dir "$base/dist" --disable-web
+grep -q 'LITEHELM_WEB=0' /etc/systemd/system/litehelm.service.d/30-litehelm-web.conf
+[ "$(http_code /)" = 404 ]
+[ "$(http_code /api/v1/system auth)" = 200 ]
+sh "$base/install.sh" --local-dir "$base/dist"
+[ -e /etc/systemd/system/litehelm.service.d/30-litehelm-web.conf ]
+sh "$base/install.sh" --local-dir "$base/dist" --enable-web
+[ ! -e /etc/systemd/system/litehelm.service.d/30-litehelm-web.conf ]
+[ "$(http_code /)" = 200 ]
 cp "$base/dist/litehelm-linux-amd64" "$tmp/litehelm-linux-amd64"
 printf '%064d  litehelm-linux-amd64\n' 0 > "$tmp/SHA256SUMS"
 if sh "$base/install.sh" --local-dir "$tmp"; then echo 'Accepted bad checksum'; exit 1; fi
@@ -160,4 +198,4 @@ if sh "$base/install.sh" --local-dir "$tmp"; then echo 'Accepted crashing binary
 [ "$binary_hash" = "$(sha256sum /usr/local/bin/litehelm)" ]
 [ "$token_hash" = "$(sha256sum /etc/litehelm/token)" ]
 systemctl is-active --quiet litehelm.service
-printf '%s\n' 'Installer first install, reinstall, service actions/logs, protected unit, checksum rejection and rollback: PASS'
+printf '%s\n' 'Installer first install, reinstall, service actions/logs, protected unit, web UI toggle, checksum rejection and rollback: PASS'
