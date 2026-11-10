@@ -11,6 +11,7 @@ cleanup() {
  systemctl stop 'litehelm-job-*' >/dev/null 2>&1 || true
  rm -f /etc/systemd/system/litehelm.service /etc/systemd/system/fixture-worker.service /etc/systemd/system/fixture-worker.timer /usr/local/bin/litehelm
  rm -rf /etc/litehelm /etc/systemd/system/litehelm.service.d /var/lib/litehelm /etc/litehelm-exec-test "$tmp"
+ userdel -r litehelm >/dev/null 2>&1 || true
  systemctl daemon-reload
 }
 trap cleanup EXIT
@@ -109,10 +110,9 @@ except urllib.error.HTTPError as e:
 assert subprocess.run(['systemctl','is-active','--quiet','fixture-worker.service']).returncode!=0
 print('Tools ports/disks/timer whitelist/manual scan/cooldown: PASS')
 PY
-# Script jobs: opt-in, systemd transient units outside the management sandbox.
-sh "$base/install.sh" --local-dir "$base/dist" --enable-exec
-python3 - <<'PY'
-import json, time, subprocess, urllib.request, urllib.error
+# Script jobs: opt-in; a dedicated unprivileged account by default, root only on request.
+cat > "$tmp/jobs.py" <<'PY'
+import json, sys, time, subprocess, urllib.request, urllib.error
 from pathlib import Path
 token=Path('/etc/litehelm/token').read_text().strip()
 def req(path, body=None, expect=200):
@@ -130,22 +130,60 @@ def wait(i, limit=40):
   if v['job']['state']!='running': return v
   time.sleep(0.3)
  raise AssertionError(v)
+def run(script):
+ v=wait(req('jobs',{'script':script})['job']['id'])
+ assert v['job']['state']=='succeeded', v
+ return v
+probe='#!/bin/sh -eu\nwhoami\npwd\ngrep NoNewPrivs /proc/self/status\nif (echo x > /etc/litehelm-exec-test) 2>/dev/null; then echo wrote-etc; fi\nif ls /var/lib/litehelm >/dev/null 2>&1; then echo read-state; fi\n'
+mode=sys.argv[1]
 assert req('system')['capabilities']['exec'] is True
-assert req('jobs')['runner']=='systemd'
-j=req('jobs',{'script':'#!/bin/sh\nset -eu\nwhoami\necho deployed > /etc/litehelm-exec-test\n'})['job']
-v=wait(j['id']); assert v['job']['state']=='succeeded' and v['output']=='root\n', v
-assert Path('/etc/litehelm-exec-test').read_text()=='deployed\n'
-j=req('jobs',{'script':'exit 7'})['job']; assert wait(j['id'])['job']['exit_code']==7
-j=req('jobs',{'script':'while true; do echo tick; sleep 0.2; done'})['job']; time.sleep(1)
-req('services/litehelm-job-'+j['id']+'.service/action',{'action':'stop'},expect=403)
-subprocess.run(['systemctl','restart','litehelm.service'],check=True); time.sleep(2)
-assert req('jobs/'+j['id'])['job']['state']=='running'
-req('jobs/'+j['id']+'/cancel',{}); assert wait(j['id'])['job']['state']=='cancelled'
-j=req('jobs',{'script':'sleep 120','timeout_seconds':10})['job']; assert wait(j['id'])['job']['state']=='timeout'
-print('Script jobs: root deploy outside sandbox, exit code, restart survival, cancel, timeout, protected unit: PASS')
+info=req('jobs'); assert info['runner']=='systemd' and info['user']==mode, info
+if mode=='litehelm':
+ v=run(probe)
+ assert v['job']['user']=='litehelm' and v['output']=='litehelm\n/home/litehelm\nNoNewPrivs:\t1\n', v
+ assert not Path('/etc/litehelm-exec-test').exists()
+ v=run('#!/usr/bin/env python3\nimport os\nprint(os.getuid()==0, "$HOME")\n'); assert v['output']=='False $HOME\n', v
+ assert not Path('/run/litehelm-job-'+v['job']['id']).exists()
+ j=req('jobs',{'script':'exit 7'})['job']; assert wait(j['id'])['job']['exit_code']==7
+ j=req('jobs',{'script':'while true; do echo tick; sleep 0.2; done'})['job']; time.sleep(1)
+ req('services/litehelm-job-'+j['id']+'.service/action',{'action':'stop'},expect=403)
+ subprocess.run(['systemctl','restart','litehelm.service'],check=True); time.sleep(2)
+ assert req('jobs/'+j['id'])['job']['state']=='running'
+ req('jobs/'+j['id']+'/cancel',{}); assert wait(j['id'])['job']['state']=='cancelled'
+ j=req('jobs',{'script':'sleep 120','timeout_seconds':10})['job']; assert wait(j['id'])['job']['state']=='timeout'
+ print('Script jobs as litehelm: no root, no new privileges, no /etc or state access, shebang, restart survival, cancel, timeout: PASS')
+else:
+ v=run(probe)
+ assert v['output']=='root\n/root\nNoNewPrivs:\t0\nwrote-etc\nread-state\n', v
+ assert Path('/etc/litehelm-exec-test').read_text()=='x\n'
+ Path('/etc/litehelm-exec-test').unlink()
+ print('Script jobs as explicit root: PASS')
 PY
+exec_conf=/etc/systemd/system/litehelm.service.d/20-litehelm-exec.conf
+sh "$base/install.sh" --local-dir "$base/dist" --enable-exec
+[ "$(stat -c %U:%a /home/litehelm)" = litehelm:700 ]
+if grep -q LITEHELM_EXEC_USER "$exec_conf"; then echo 'Default script user written to drop-in'; exit 1; fi
+python3 "$tmp/jobs.py" litehelm
+sh "$base/install.sh" --local-dir "$base/dist" --exec-user root
+grep -qx 'Environment=LITEHELM_EXEC_USER=root' "$exec_conf"
+sh "$base/install.sh" --local-dir "$base/dist"
+sh "$base/install.sh" --local-dir "$base/dist" --enable-exec
+grep -qx 'Environment=LITEHELM_EXEC_USER=root' "$exec_conf"
+python3 "$tmp/jobs.py" root
+if sh "$base/install.sh" --local-dir "$base/dist" --exec-user nosuchuser; then echo 'Accepted missing script user'; exit 1; fi
+if sh "$base/install.sh" --local-dir "$base/dist" --exec-user 'a;b'; then echo 'Accepted unsafe script user'; exit 1; fi
+grep -qx 'Environment=LITEHELM_EXEC_USER=root' "$exec_conf"
+sh "$base/install.sh" --local-dir "$base/dist" --exec-user litehelm
+if grep -q LITEHELM_EXEC_USER "$exec_conf"; then echo 'Script user not reset to litehelm'; exit 1; fi
+# Upgrade from an older drop-in (scripts ran as root): the account is created and scripts drop root.
+printf '%s\n' '[Service]' 'Environment=LITEHELM_ALLOW_EXEC=1' 'StateDirectory=litehelm' 'StateDirectoryMode=0700' > "$exec_conf"
+userdel -r litehelm
+sh "$base/install.sh" --local-dir "$base/dist"
+id -u litehelm >/dev/null
+python3 "$tmp/jobs.py" litehelm
 sh "$base/install.sh" --local-dir "$base/dist" --disable-exec
-[ ! -e /etc/systemd/system/litehelm.service.d/20-litehelm-exec.conf ]
+[ ! -e "$exec_conf" ]
+id -u litehelm >/dev/null
 # Web UI: on by default, same listener as the API; --disable-web keeps the API.
 http_code() {
  python3 - "$1" "${2:-}" <<'PY'
@@ -195,6 +233,14 @@ exit 1
 BAD
 (cd "$tmp" && sha256sum litehelm-linux-amd64 > SHA256SUMS)
 if sh "$base/install.sh" --local-dir "$tmp"; then echo 'Accepted crashing binary'; exit 1; fi
+[ "$binary_hash" = "$(sha256sum /usr/local/bin/litehelm)" ]
+cat > "$tmp/litehelm-linux-amd64" <<'NOEXECUSER'
+#!/bin/sh
+if [ "${1:-}" = -h ]; then echo "Usage: litehelm [-allow-exec]"; exit 0; fi
+exit 0
+NOEXECUSER
+(cd "$tmp" && sha256sum litehelm-linux-amd64 > SHA256SUMS)
+if sh "$base/install.sh" --local-dir "$tmp" --enable-exec; then echo 'Accepted legacy binary as unprivileged script user'; exit 1; fi
 [ "$binary_hash" = "$(sha256sum /usr/local/bin/litehelm)" ]
 [ "$token_hash" = "$(sha256sum /etc/litehelm/token)" ]
 systemctl is-active --quiet litehelm.service

@@ -1,5 +1,11 @@
 # 已做检查与限制
 
+## 脚本改为低权限用户运行（未发布）
+
+- 服务端：`golang:1.24` 容器中以 root 运行 `go test -race`、`go vet`，以普通用户运行 `go test`；新增测试覆盖运行用户解析（root 默认 `litehelm`、仅显式指定 root、非 root 不能切换或提权、无 systemd 不能降权、非法用户名拒绝）、`#!` 解析（单个可选参数）、临时 unit 参数（`User=`、`NoNewPrivileges`、`+` 前缀辅助脚本、`append:` 输出、`$` 转义）。
+- 真实 systemd（Debian 12 arm64 特权容器，systemd 252，`/run` 为 noexec）：`scripts/test-install.sh` 与 ShellCheck 通过。默认 `--enable-exec` 创建 `litehelm`（家目录 0700）；脚本 `whoami`=litehelm、工作目录 `/home/litehelm`、`NoNewPrivs: 1`、写 `/etc` 失败、读 `/var/lib/litehelm` 失败；`#!/usr/bin/env python3` 可运行、任务结束后运行目录清除；LiteHelm 重启时任务继续、取消、超时、受保护 unit 不变。`--exec-user root` 后为 root（可写 `/etc`），不带参数重装及 `--enable-exec` 保持；不存在/非法用户被拒绝且原配置不变；`--exec-user litehelm` 恢复；模拟旧版 drop-in 并删除用户后重装，自动创建用户并改为 litehelm；`--disable-exec` 保留用户。
+- 未验证：Ubuntu/RHEL 实机；systemd 低于 245 的系统（`+` 前缀与 `append:` 依赖较新 systemd，而本项目已要求 Linux 5.6+）。App 与网页未改动（运行身份取自 API 的 `user`）。
+
 ## v0.4 网页版（同端口）
 
 - 服务端：`golang:1.24` 容器内 `go test -race`、`go vet`、gofmt 通过；新增 4 组测试覆盖静态资源类型/安全头/ETag/HEAD/路径穿越 404/非 GET 405、`-web=false` 时 API 仍可用、`/api` 前缀一律鉴权、同源规则（无 Origin、同 Host、大小写、Sec-Fetch-Site same-origin 放行；跨站、同站子域、`null`、端口不同 403；同源无令牌 401）。

@@ -15,7 +15,12 @@ import (
 func jobApp(t *testing.T) *app {
 	t.Helper()
 	a := testApp()
-	j, e := newJobRunner(filepath.Join(t.TempDir(), "jobs"))
+	// Root without systemd may only run scripts as root; other users run as themselves.
+	user := ""
+	if os.Geteuid() == 0 {
+		user = "root"
+	}
+	j, e := newJobRunner(filepath.Join(t.TempDir(), "jobs"), user)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -181,10 +186,10 @@ func TestJobValidation(t *testing.T) {
 	if w := request(a, "GET", "/api/v1/jobs/20260101-000000-abcdef", "", testToken); w.Code != 404 {
 		t.Fatal(w.Code)
 	}
-	if _, e := newJobRunner("relative/jobs"); e == nil {
+	if _, e := newJobRunner("relative/jobs", ""); e == nil {
 		t.Fatal("accepted relative jobs dir")
 	}
-	if _, e := newJobRunner("/tmp/with space"); e == nil {
+	if _, e := newJobRunner("/tmp/with space", ""); e == nil {
 		t.Fatal("accepted unsafe jobs dir")
 	}
 	if n := jobName("", "#!/bin/sh\n# comment\n\n  apt-get install -y nginx\n"); n != "apt-get install -y nginx" {
@@ -279,5 +284,89 @@ func TestParseResult(t *testing.T) {
 		if info.State != c.state || info.ExitCode != c.code || info.Signal != c.signal {
 			t.Fatal(c.raw, info)
 		}
+	}
+}
+
+func TestResolveExecUser(t *testing.T) {
+	cases := []struct {
+		root, unit      bool
+		self, requested string
+		want            string
+	}{
+		{true, true, "root", "", "litehelm"},      // default: dedicated account, never root
+		{true, true, "root", "root", "root"},      // root only when asked for
+		{true, true, "root", "deploy", "deploy"},  // any existing account
+		{true, false, "root", "root", "root"},     // root without systemd stays a direct child
+		{false, false, "alice", "", "alice"},      // non-root LiteHelm cannot switch users
+		{false, false, "alice", "alice", "alice"}, // explicit self is fine
+		{false, true, "litehelm", "", "litehelm"}, // unit mode flag is irrelevant without root
+		{false, false, "litehelm", "litehelm", "litehelm"},
+	}
+	for _, c := range cases {
+		if got, e := resolveExecUser(c.root, c.unit, c.self, c.requested); e != nil || got != c.want {
+			t.Fatal(c, got, e)
+		}
+	}
+	for _, c := range []struct {
+		root, unit      bool
+		self, requested string
+	}{
+		{true, false, "root", ""},         // dropping privileges needs a systemd unit
+		{true, false, "root", "litehelm"}, // same, explicit
+		{false, false, "alice", "root"},   // cannot escalate
+		{false, false, "alice", "bob"},    // cannot switch
+		{true, true, "root", "Bad User"},  // unsafe name
+		{true, true, "root", "-rf"},       // option-like name
+		{true, true, "root", "a;reboot"},  // shell metacharacters
+	} {
+		if got, e := resolveExecUser(c.root, c.unit, c.self, c.requested); e == nil {
+			t.Fatal("accepted", c, got)
+		}
+	}
+}
+
+func TestScriptArgv(t *testing.T) {
+	const p = "/run/x/script"
+	cases := map[string][]string{
+		"echo hi\n":                          {"/bin/sh", p},
+		"#!/bin/sh\necho hi\n":               {"/bin/sh", p},
+		"#!/bin/sh -eu\n":                    {"/bin/sh", "-eu", p},
+		"#! /usr/bin/env  python3 \nprint()": {"/usr/bin/env", "python3", p},
+		"#!/usr/bin/env -S bash -x\n":        {"/usr/bin/env", "-S bash -x", p}, // kernel passes one optional argument
+		"#!\necho hi\n":                      {"/bin/sh", p},
+		"#!/bin/bash":                        {"/bin/bash", p},
+		" #!/bin/bash\n":                     {"/bin/sh", p},
+	}
+	for script, want := range cases {
+		if got := scriptArgv(script, p); strings.Join(got, "|") != strings.Join(want, "|") {
+			t.Fatalf("%q: %q", script, got)
+		}
+	}
+}
+
+func TestUnitArgs(t *testing.T) {
+	id := "20260101-000000-abcdef"
+	j := &jobRunner{dir: "/var/lib/litehelm/jobs", systemd: true, user: "litehelm", uid: "998", gid: "997"}
+	args := strings.Join(j.unitArgs(id, "#!/bin/sh -c $HOME\n", 60), "\n")
+	for _, want := range []string{
+		"--property=User=litehelm",
+		"--property=NoNewPrivileges=yes",
+		"--property=RuntimeDirectory=litehelm-job-" + id,
+		"--property=StandardOutput=append:/var/lib/litehelm/jobs/" + id + "/output",
+		"--property=ExecStartPre=+/bin/sh /var/lib/litehelm/jobs/" + id + "/pre.sh",
+		"--property=ExecStopPost=+/bin/sh /var/lib/litehelm/jobs/" + id + "/post.sh",
+		"--\n/bin/sh\n-c $$HOME\n/run/litehelm-job-" + id + "/script",
+	} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("missing %q in\n%s", want, args)
+		}
+	}
+	if strings.Contains(args, "User=root") {
+		t.Fatal(args)
+	}
+	j.user, j.uid, j.gid = "root", "0", "0"
+	args = strings.Join(j.unitArgs(id, "id\n", 60), "\n")
+	if !strings.Contains(args, "--property=User=root") || strings.Contains(args, "NoNewPrivileges") {
+		t.Fatal(args)
 	}
 }

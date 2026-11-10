@@ -19,6 +19,9 @@ func TestInstalledServiceSurvivesUnload(t *testing.T) {
 	if len(units) != 4 || units["nginx.service"].Active != "active" || units["stopped.service"].Active != "inactive" || units["locked.service"].Load != "masked" || units["worker.service"].Active != "failed" {
 		t.Fatal(units)
 	}
+	if units["nginx.service"].UnitFileState != "enabled" || units["stopped.service"].UnitFileState != "disabled" || units["locked.service"].UnitFileState != "masked" {
+		t.Fatal(units)
+	}
 }
 func TestUTF8OutputAndTruncation(t *testing.T) {
 	p := t.TempDir() + "/log"
@@ -37,5 +40,46 @@ func TestUTF8OutputAndTruncation(t *testing.T) {
 	value, tr, e = commandLimit(context.Background(), 128<<10, cat, p)
 	if e != nil || tr || value != raw {
 		t.Fatal(len(value), tr, e)
+	}
+}
+
+func TestTailBufferDirect(t *testing.T) {
+	var tb tailBuffer
+	tb.limit = 10
+	_, _ = tb.Write([]byte("12345"))
+	if tb.String() != "12345" || tb.truncated {
+		t.Fatal(tb.String(), tb.truncated)
+	}
+	_, _ = tb.Write([]byte("678901"))
+	if tb.String() != "2345678901" || !tb.truncated {
+		t.Fatal(tb.String(), tb.truncated)
+	}
+	_, _ = tb.Write([]byte("ABCDEFGHIJK"))
+	if tb.String() != "BCDEFGHIJK" || !tb.truncated {
+		t.Fatal(tb.String(), tb.truncated)
+	}
+}
+
+func TestTailBufferAndLogRetention(t *testing.T) {
+	p := t.TempDir() + "/log"
+	first := "START_OF_OLD_LOG\n"
+	last := "\nEND_OF_LATEST_LOG_LINE"
+	raw := first + strings.Repeat("x", 70000) + last
+	if e := os.WriteFile(p, []byte(raw), 0600); e != nil {
+		t.Fatal(e)
+	}
+	cat := "cat"
+	if _, e := os.Stat("/system/bin/cat"); e == nil {
+		cat = "/system/bin/cat"
+	}
+	value, tr, e := commandTail(context.Background(), 65536, cat, p)
+	if e != nil || !tr || !utf8.ValidString(value) || len(value) > 65536 {
+		t.Fatalf("unexpected result: len=%d tr=%v err=%v", len(value), tr, e)
+	}
+	if strings.Contains(value, first) {
+		t.Fatalf("expected head to be discarded, but found: %q", first)
+	}
+	if !strings.HasSuffix(value, last) {
+		t.Fatalf("expected latest lines to be preserved, but missing %q in: %q", last, value)
 	}
 }

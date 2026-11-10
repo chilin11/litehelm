@@ -571,7 +571,13 @@ function processes(el, ctx) {
   const sub = h('div', { class: 'sub' });
   const sortSeg = segmented([['memory', t('memory')], ['cpu', t('cpu_average')]], sort, (v) => { sort = v; data = null; load(); });
   const limitSeg = segmented([[100, t('top_n', 100)], [300, t('top_n', 300)]], limit, (v) => { limit = v; load(); });
-  const search = searchBox(t('search_processes'), (v) => { q = v; renderList(); });
+  let searchTimer;
+  const search = searchBox(t('search_processes'), (v) => {
+    q = v;
+    renderList();
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => { if (ctx.alive()) load(); }, 300);
+  });
   const listEl = h('div');
   add(el, [head(t('nav_processes'), sub, rb),
     h('div', { class: 'toolbar' }, sortSeg.el, limitSeg.el, search.el),
@@ -610,7 +616,8 @@ function processes(el, ctx) {
     if (loading) return;
     loading = true; rb.busy(true); renderList();
     try {
-      const d = await api('GET', `processes?limit=${limit}${sort === 'cpu' ? '&sort=cpu' : ''}`);
+      const qParam = q.trim() ? `&q=${enc(q.trim())}` : '';
+      const d = await api('GET', `processes?limit=${limit}${sort === 'cpu' ? '&sort=cpu' : ''}${qParam}`);
       if (!ctx.alive()) return;
       if (!Array.isArray(d.processes)) throw new ApiError(t('err_data_format'));
       data = d.processes; err = '';
@@ -672,6 +679,7 @@ function services(el, ctx) {
   const detail = h('div', { class: 'panel detail', 'aria-live': 'polite' });
   add(el, [head(t('nav_services'), sub, rb), h('div', { class: 'toolbar' }, search.el, filters.el), h('div', { class: 'split master' }, listEl, detail)]);
 
+  const svcDesc = (s) => s.description || (s.unit_file_state ? t('unit_installed', s.unit_file_state) : DASH);
   const matchFilter = (s, f) => f === 'all' || (f === 'running' && s.active_state === 'active') || (f === 'failed' && s.active_state === 'failed') || (f === 'inactive' && s.active_state === 'inactive');
   function renderList() {
     if (!supported) { fill(listEl, emptyBlock(t('no_systemd'))); sub.textContent = t('systemd_services'); return; }
@@ -679,7 +687,7 @@ function services(el, ctx) {
     sub.textContent = t('services_count', data.length);
     for (const f of ['all', 'running', 'failed', 'inactive']) filters.count(f, data.filter((s) => matchFilter(s, f)).length);
     const needle = lower(q.trim());
-    const rows = data.filter((s) => matchFilter(s, filter) && (!needle || lower(s.name).includes(needle) || lower(s.description).includes(needle)));
+    const rows = data.filter((s) => matchFilter(s, filter) && (!needle || lower(s.name).includes(needle) || lower(svcDesc(s)).includes(needle)));
     const fav = new Set(favs.list());
     fill(listEl,
       err ? staleBanner(err) : null,
@@ -689,7 +697,7 @@ function services(el, ctx) {
             const [cls, text] = svcState(s);
             return h('button', { class: 'row svc', type: 'button', 'aria-selected': String(s.name === selected), onclick: () => { location.hash = '#/services/' + enc(s.name); } },
               h('span', { class: 'dot ' + cls }),
-              h('div', { class: 'cell' }, h('span', { class: 'name mono' }, fav.has(s.name) ? '★ ' : '', s.name), h('span', { class: 'l2', text: s.description || DASH })),
+              h('div', { class: 'cell' }, h('span', { class: 'name mono' }, fav.has(s.name) ? '★ ' : '', s.name), h('span', { class: 'l2', text: svcDesc(s) })),
               h('span', { class: 'state-tag ' + cls, text }));
           })));
   }
@@ -715,10 +723,12 @@ function services(el, ctx) {
       h('div', { class: 'head', style: { marginBottom: '8px' } },
         h('div', { style: { display: 'flex', gap: '8px', alignItems: 'flex-start', minWidth: 0 } }, back,
           h('div', { style: { minWidth: 0 } }, h('h2', { class: 'mono', style: { margin: 0, fontSize: '16px', wordBreak: 'break-all' }, text: s.name }),
-            h('div', { class: 'sub small', text: s.description || DASH }))),
+            h('div', { class: 'sub small', text: svcDesc(s) }))),
         h('div', { class: 'head-actions' }, star)),
       tag(cls, text),
-      h('dl', { class: 'kv' }, h('dt', { text: 'load_state' }), h('dd', { class: 'mono', text: s.load_state }),
+      h('dl', { class: 'kv' },
+        s.unit_file_state ? [h('dt', { text: 'unit_file_state' }), h('dd', { class: 'mono', text: s.unit_file_state })] : null,
+        h('dt', { text: 'load_state' }), h('dd', { class: 'mono', text: s.load_state }),
         h('dt', { text: 'active_state' }), h('dd', { class: 'mono', text: s.active_state }), h('dt', { text: 'sub_state' }), h('dd', { class: 'mono', text: s.sub_state })),
       h('div', { class: 'btn-row' }, actBtn('start', 'primary', can && idle), actBtn('restart', '', can && active), actBtn('stop', 'ghost-danger', can && active)),
       note ? h('p', { class: 'note', text: note }) : null,
@@ -1217,6 +1227,7 @@ function settings(el, ctx) {
         h('div', { class: 'panel-title' }, t('connection')),
         h('dl', { class: 'kv' }, h('dt', { text: t('server_address') }), h('dd', { class: 'mono', text: location.origin }),
           h('dt', { text: t('host') }), h('dd', { class: 'mono', 'data-hostname': '', text: host || DASH }),
+          h('dt', { text: t('version') }), h('dd', { class: 'mono', text: (S.sys && S.sys.version) ? S.sys.version : DASH }),
           h('dt', { text: t('access_token') }), h('dd', { text: '••••••••' + S.token.slice(-4) })),
         h('label', { class: 'check', style: { marginBottom: '16px' } }, remember, h('div', {}, t('remember_token'), h('div', { class: 'small muted', text: t('remember_hint') }))),
         h('button', { class: 'btn ghost-danger', type: 'button', text: t('sign_out'), onclick: () => signOut() })),

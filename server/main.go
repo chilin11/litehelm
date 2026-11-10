@@ -31,6 +31,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+var version = "dev"
+
 type app struct {
 	token    [32]byte
 	power    bool
@@ -50,11 +52,17 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:9091", "HTTP listen address; loopback only")
 	tokenFile := flag.String("token-file", "/etc/litehelm/token", "file containing a random bearer token (mode 0600)")
 	power := flag.Bool("allow-power", false, "enable reboot/poweroff (requires root and systemd)")
-	allowExec := flag.Bool("allow-exec", os.Getenv("LITEHELM_ALLOW_EXEC") == "1", "enable arbitrary script jobs as the LiteHelm user (also LITEHELM_ALLOW_EXEC=1)")
+	allowExec := flag.Bool("allow-exec", os.Getenv("LITEHELM_ALLOW_EXEC") == "1", "enable arbitrary script jobs (also LITEHELM_ALLOW_EXEC=1)")
+	execUser := flag.String("exec-user", os.Getenv("LITEHELM_EXEC_USER"), "account that runs script jobs when LiteHelm is root (default litehelm; root only when set explicitly; also LITEHELM_EXEC_USER)")
 	jobsFlag := flag.String("jobs-dir", "", "script job directory (default $STATE_DIRECTORY/jobs or /var/lib/litehelm/jobs)")
 	generate := flag.Bool("generate-token", false, "print a new random token and exit")
+	showVersion := flag.Bool("version", false, "print LiteHelm version and exit")
 	web := flag.Bool("web", os.Getenv("LITEHELM_WEB") != "0", "serve the built-in web UI on the same address (disable with -web=false or LITEHELM_WEB=0)")
 	flag.Parse()
+	if *showVersion {
+		fmt.Printf("LiteHelm %s\n", version)
+		return
+	}
 	if *generate {
 		b := make([]byte, 32)
 		if _, e := rand.Read(b); e != nil {
@@ -89,7 +97,7 @@ func main() {
 	a.execReason = "start the server with -allow-exec or LITEHELM_ALLOW_EXEC=1"
 	if *allowExec {
 		// A broken jobs directory disables scripts but keeps the management API reachable.
-		if a.jobs, err = newJobRunner(jobsDir(*jobsFlag)); err != nil {
+		if a.jobs, err = newJobRunner(jobsDir(*jobsFlag), *execUser); err != nil {
 			a.execReason = err.Error()
 			log.Printf("script jobs disabled: %v", err)
 		}
@@ -97,11 +105,13 @@ func main() {
 	srv := &http.Server{Addr: *listen, Handler: a, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 25 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	shutdownDone := make(chan struct{})
 	go func() {
 		<-ctx.Done()
 		c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(c)
+		close(shutdownDone)
 	}()
 	execMode := "off"
 	if a.jobs != nil {
@@ -111,6 +121,7 @@ func main() {
 	if e := srv.ListenAndServe(); e != nil && !errors.Is(e, http.ErrServerClosed) {
 		log.Fatal(e)
 	}
+	<-shutdownDone
 }
 
 func output(w http.ResponseWriter, status int, v any) {
@@ -307,7 +318,7 @@ func (a *app) system(w http.ResponseWriter, r *http.Request) {
 			osName = strings.Trim(strings.TrimPrefix(l, "PRETTY_NAME="), "\"")
 		}
 	}
-	output(w, 200, map[string]any{"hostname": name, "os": osName, "arch": runtime.GOARCH, "uptime_seconds": uint64(uptime()), "cpu_percent": cpu, "cpu_cores": runtime.NumCPU(), "load": load, "memory": map[string]uint64{"total": mem["MemTotal"], "used": mem["MemTotal"] - avail, "available": avail}, "swap": map[string]uint64{"total": mem["SwapTotal"], "used": mem["SwapTotal"] - mem["SwapFree"]}, "disk": map[string]uint64{"total": total, "used": used, "free": free}, "network": map[string]uint64{"rx_bytes": rx, "tx_bytes": tx}, "timestamp": time.Now().Unix(), "capabilities": map[string]bool{"process_signal": os.Geteuid() == 0, "service_control": os.Geteuid() == 0 && systemd(), "power": a.power && os.Geteuid() == 0 && systemd(), "exec": a.jobs != nil}})
+	output(w, 200, map[string]any{"version": version, "hostname": name, "os": osName, "arch": runtime.GOARCH, "uptime_seconds": uint64(uptime()), "cpu_percent": cpu, "cpu_cores": runtime.NumCPU(), "load": load, "memory": map[string]uint64{"total": mem["MemTotal"], "used": mem["MemTotal"] - avail, "available": avail}, "swap": map[string]uint64{"total": mem["SwapTotal"], "used": mem["SwapTotal"] - mem["SwapFree"]}, "disk": map[string]uint64{"total": total, "used": used, "free": free}, "network": map[string]uint64{"rx_bytes": rx, "tx_bytes": tx}, "timestamp": time.Now().Unix(), "capabilities": map[string]bool{"process_signal": os.Geteuid() == 0, "service_control": os.Geteuid() == 0 && systemd(), "power": a.power && os.Geteuid() == 0 && systemd(), "exec": a.jobs != nil}})
 }
 
 type process struct {
@@ -402,6 +413,16 @@ func (a *app) processes(w http.ResponseWriter, r *http.Request) {
 		}
 		ps = append(ps, p)
 	}
+	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	if query != "" {
+		filtered := make([]process, 0, len(ps))
+		for _, p := range ps {
+			if strings.Contains(strings.ToLower(p.Name), query) || strings.Contains(strings.ToLower(p.User), query) || strconv.Itoa(p.PID) == query {
+				filtered = append(filtered, p)
+			}
+		}
+		ps = filtered
+	}
 	sortProcesses(ps, r.URL.Query().Get("sort") == "cpu")
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 {
@@ -486,11 +507,12 @@ func (a *app) signalProcess(w http.ResponseWriter, r *http.Request) {
 var unitPattern = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_.@:\x2d]*\.service$`)
 
 type serviceInfo struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Load        string `json:"load_state"`
-	Active      string `json:"active_state"`
-	Sub         string `json:"sub_state"`
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	Load          string `json:"load_state"`
+	Active        string `json:"active_state"`
+	Sub           string `json:"sub_state"`
+	UnitFileState string `json:"unit_file_state,omitempty"`
 }
 type cappedBuffer struct {
 	buffer    bytes.Buffer
@@ -509,8 +531,50 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 	return n, nil
 }
 func (b *cappedBuffer) String() string { return b.buffer.String() }
+
+type tailBuffer struct {
+	buffer    bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (b *tailBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	if n >= b.limit {
+		b.buffer.Reset()
+		b.buffer.Write(p[n-b.limit:])
+		b.truncated = true
+		return n, nil
+	}
+	overflow := b.buffer.Len() + n - b.limit
+	if overflow > 0 {
+		b.truncated = true
+		kept := append([]byte(nil), b.buffer.Bytes()[overflow:]...)
+		b.buffer.Reset()
+		b.buffer.Write(kept)
+	}
+	b.buffer.Write(p)
+	return n, nil
+}
+func (b *tailBuffer) String() string { return b.buffer.String() }
+
 func command(ctx context.Context, name string, args ...string) (string, bool, error) {
 	return commandLimit(ctx, 64<<10, name, args...)
+}
+func commandTail(ctx context.Context, limit int, name string, args ...string) (string, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "SYSTEMD_PAGER=", "SYSTEMD_COLORS=0")
+	out := &tailBuffer{limit: limit}
+	errout := &cappedBuffer{limit: 4096}
+	cmd.Stdout = out
+	cmd.Stderr = errout
+	e := cmd.Run()
+	if e != nil {
+		return "", false, fmt.Errorf("%s: %s", e, strings.TrimSpace(errout.String()))
+	}
+	return strings.ToValidUTF8(out.String(), ""), out.truncated, nil
 }
 func commandLimit(ctx context.Context, limit int, name string, args ...string) (string, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -587,7 +651,7 @@ func (a *app) service(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if op == "logs" && r.Method == "GET" {
-		out, tr, e := command(r.Context(), "journalctl", "--unit="+name, "-n", "80", "--no-pager", "--output=short-iso")
+		out, tr, e := commandTail(r.Context(), 64<<10, "journalctl", "--unit="+name, "-n", "80", "--no-pager", "--output=short-iso")
 		if e != nil {
 			fail(w, 500, e.Error())
 			return

@@ -103,17 +103,21 @@ ExecStart=/usr/local/bin/litehelm -listen 127.0.0.1:9091 -token-file /etc/litehe
 
 ## 运行脚本（默认关闭）
 
-开启后，持有令牌的设备可在服务器上以 LiteHelm 服务用户身份执行**任意命令**（默认安装为 root），适合部署、更新等一次性任务。只在确实需要时开启：
+开启后，持有令牌的设备可在服务器上执行**任意命令**，适合部署、更新等一次性任务。脚本默认以**专用低权限用户 `litehelm`** 运行，不是 root。只在确实需要时开启：
 
 ```sh
-sudo sh install.sh --enable-exec    # 开启，保留令牌与现有配置
-sudo sh install.sh --disable-exec   # 关闭
+sudo sh install.sh --enable-exec          # 开启；不存在时创建 litehelm 用户
+sudo sh install.sh --exec-user root       # 需要 root 时显式指定（也可填其他已有用户）
+sudo sh install.sh --exec-user litehelm   # 改回默认
+sudo sh install.sh --disable-exec         # 关闭（保留 litehelm 用户）
 ```
 
-开启会添加 `20-litehelm-exec.conf`（`LITEHELM_ALLOW_EXEC=1`、`StateDirectory=litehelm`）；之后不带参数重装保持当前开关不变。手动运行可用 `-allow-exec` 与 `-jobs-dir`。App 入口：底部导航「脚本」页。
+开启会添加 `20-litehelm-exec.conf`（`LITEHELM_ALLOW_EXEC=1`、`StateDirectory=litehelm`，非默认用户时加 `LITEHELM_EXEC_USER=`）；之后不带参数重装保持当前开关和用户不变。手动运行可用 `-allow-exec`、`-exec-user` 与 `-jobs-dir`。App 和网页的脚本页会显示实际运行身份。
 
-- **root + systemd**：每个脚本是独立的临时 unit `litehelm-job-<ID>.service`，不受 LiteHelm 沙箱与 capabilities 限制，可写 `/etc`、`/usr`、`/opt`；LiteHelm 重启或升级不会中断任务。工作目录为 root 家目录。服务页不能停止这些 unit，请在任务页取消。
-- **非 root 运行 LiteHelm**：脚本是 LiteHelm 的子进程组，权限与该用户相同，并继承 unit 沙箱（如 `ProtectSystem=strict`、`ProtectHome=read-only`）；需写入的路径请用 drop-in 的 `ReadWritePaths=` 放行。LiteHelm 重启会中断任务，记录显示“丢失”。
+- **默认 `litehelm` 用户**：安装器创建的系统用户，无登录 shell、无 sudo，家目录 `/home/litehelm`（0700，也是工作目录）。任务设置 `NoNewPrivileges`，无法通过 sudo 或 setuid 程序提权；不能写 `/etc`、`/usr`，也读不到 LiteHelm 的令牌和任务记录。部署目录请提前授权，例如 `sudo chown -R litehelm /srv/myapp`；需要重启服务、装软件包时用 `--exec-user root`。
+- **systemd 运行方式**（LiteHelm 以 root 运行时）：每个脚本是独立的临时 unit `litehelm-job-<ID>.service`，以上述用户运行，不在 LiteHelm 自身的沙箱里；LiteHelm 重启或升级不会中断任务。服务页不能停止这些 unit，请在任务页取消。
+- **非 root 运行 LiteHelm**：无法切换用户，脚本是 LiteHelm 的子进程组，权限与该用户相同，并继承 unit 沙箱（如 `ProtectSystem=strict`、`ProtectHome=read-only`）；需写入的路径请用 drop-in 的 `ReadWritePaths=` 放行。LiteHelm 重启会中断任务，记录显示“丢失”。
+- 从 v0.4.0 及更早版本升级：原来脚本以 root 运行；不带参数重装后改为 `litehelm`。确需 root 的部署脚本请执行 `--exec-user root`。
 - 首行 `#!` 指定解释器，否则用 `/bin/sh`；Windows 换行自动转换。标准输入为空，不能交互，请使用 `-y`、`DEBIAN_FRONTEND=noninteractive` 等参数。
 - 脚本结束时，它启动的后台进程会一起结束；常驻程序请交给 systemd 服务或容器。
 - 时间上限可选 5 分钟 / 30 分钟 / 2 小时 / 24 小时（API 允许 10 秒–24 小时），超时或取消先发 TERM，再发 KILL。最多 4 个同时运行，保留最近 30 条记录（脚本、输出、结果），位于 `/var/lib/litehelm/jobs`（0700）。
@@ -188,7 +192,7 @@ sudo rm /etc/systemd/system/litehelm.service /usr/local/bin/litehelm
 sudo systemctl daemon-reload
 ```
 
-令牌和自定义 drop-in 保留；需要彻底清除时再自行删除 `/etc/litehelm/`、`/etc/systemd/system/litehelm.service.d/`、`/var/lib/litehelm/`（脚本任务记录），并移除对应的反向代理规则。
+令牌和自定义 drop-in 保留；需要彻底清除时再自行删除 `/etc/litehelm/`、`/etc/systemd/system/litehelm.service.d/`、`/var/lib/litehelm/`（脚本任务记录），开启过脚本的执行 `sudo userdel -r litehelm`，并移除对应的反向代理规则。
 
 ## License
 

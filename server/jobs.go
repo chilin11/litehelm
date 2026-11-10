@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	osuser "os/user"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -26,9 +27,10 @@ import (
 	"unicode/utf8"
 )
 
-// Script jobs run arbitrary commands as the LiteHelm user once -allow-exec is set.
-// Root + systemd jobs run in transient units outside the management sandbox and
-// survive LiteHelm restarts; other setups run a direct child process group.
+// Script jobs run arbitrary commands once -allow-exec is set. A root LiteHelm
+// under systemd runs each job in a transient unit as a dedicated unprivileged
+// account (root only when explicitly configured); the unit survives LiteHelm
+// restarts. Other setups run a direct child process group as the LiteHelm user.
 const (
 	jobScriptLimit  = 64 << 10
 	jobOutputChunk  = 64 << 10
@@ -42,14 +44,20 @@ const (
 var (
 	jobIDPattern  = regexp.MustCompile(`^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$`)
 	jobDirPattern = regexp.MustCompile(`^/[A-Za-z0-9/._-]+$`)
+	// Simple account names are safe in logs, unit properties and installer drop-ins.
+	execUserPattern = regexp.MustCompile(`^[a-z_][a-z0-9_.-]{0,31}$`)
 )
+
+const defaultExecUser = "litehelm"
 
 type jobRunner struct {
 	dir     string
 	systemd bool
-	user    string
-	mu      sync.Mutex
-	procs   map[string]*directJob
+	// user runs the scripts; uid/gid are only set for systemd units.
+	user     string
+	uid, gid string
+	mu       sync.Mutex
+	procs    map[string]*directJob
 }
 
 type jobMeta struct {
@@ -58,6 +66,7 @@ type jobMeta struct {
 	Started int64  `json:"started_at"`
 	Timeout int    `json:"timeout_seconds"`
 	Runner  string `json:"runner"`
+	User    string `json:"user,omitempty"`
 }
 
 type jobInfo struct {
@@ -78,7 +87,30 @@ func jobsDir(flagValue string) string {
 	return "/var/lib/litehelm/jobs"
 }
 
-func newJobRunner(dir string) (*jobRunner, error) {
+// resolveExecUser picks the script account. Root LiteHelm switches to an
+// unprivileged account through systemd unless root is requested explicitly; a
+// non-root LiteHelm cannot switch users and runs scripts as itself.
+func resolveExecUser(root, unit bool, self, requested string) (string, error) {
+	if !root {
+		if requested != "" && requested != self {
+			return "", fmt.Errorf("LiteHelm runs as %s and can only run scripts as itself; remove -exec-user", self)
+		}
+		return self, nil
+	}
+	user := requested
+	if user == "" {
+		user = defaultExecUser
+	}
+	if !execUserPattern.MatchString(user) {
+		return "", fmt.Errorf("invalid script user %q", user)
+	}
+	if user != "root" && !unit {
+		return "", fmt.Errorf("running scripts as %s needs systemd with systemd-run; run LiteHelm under systemd or use -exec-user root", user)
+	}
+	return user, nil
+}
+
+func newJobRunner(dir, execUser string) (*jobRunner, error) {
 	if !jobDirPattern.MatchString(dir) || strings.Contains(dir, "..") {
 		return nil, errors.New("jobs directory must be an absolute path of [A-Za-z0-9/._-]")
 	}
@@ -95,12 +127,23 @@ func newJobRunner(dir string) (*jobRunner, error) {
 	if e = os.Chmod(dir, 0700); e != nil {
 		return nil, e
 	}
-	user := strconv.Itoa(os.Geteuid())
-	if n, ok := users()[user]; ok {
-		user = n
+	self := strconv.Itoa(os.Geteuid())
+	if n, ok := users()[self]; ok {
+		self = n
 	}
 	_, missing := exec.LookPath("systemd-run")
-	return &jobRunner{dir: dir, systemd: os.Geteuid() == 0 && systemd() && missing == nil, user: user, procs: map[string]*directJob{}}, nil
+	j := &jobRunner{dir: dir, systemd: os.Geteuid() == 0 && systemd() && missing == nil, procs: map[string]*directJob{}}
+	if j.user, e = resolveExecUser(os.Geteuid() == 0, j.systemd, self, execUser); e != nil {
+		return nil, e
+	}
+	if j.systemd {
+		u, e := osuser.Lookup(j.user)
+		if e != nil {
+			return nil, fmt.Errorf("script user %s does not exist; install.sh --enable-exec creates it, or choose another with -exec-user", j.user)
+		}
+		j.uid, j.gid = u.Uid, u.Gid
+	}
+	return j, nil
 }
 
 func (j *jobRunner) mode() string {
@@ -112,7 +155,8 @@ func (j *jobRunner) mode() string {
 func (j *jobRunner) path(id string, name ...string) string {
 	return filepath.Join(append([]string{j.dir, id}, name...)...)
 }
-func jobUnit(id string) string { return "litehelm-job-" + id + ".service" }
+func jobUnit(id string) string    { return jobRuntime(id) + ".service" }
+func jobRuntime(id string) string { return "litehelm-job-" + id }
 
 // jobName keeps the label short and printable; empty labels use the first command line.
 func jobName(name, script string) string {
@@ -181,23 +225,20 @@ func (j *jobRunner) start(ctx context.Context, name, script string, timeout int)
 	now := time.Now()
 	// Milliseconds before the random part keep IDs (and the job list) in start order within a second.
 	id := now.UTC().Format("20060102-150405") + fmt.Sprintf("-%03x%s", now.Nanosecond()/1e6, hex.EncodeToString(stamp)[:3])
-	meta := jobMeta{ID: id, Name: jobName(name, script), Started: now.Unix(), Timeout: timeout, Runner: j.mode()}
+	meta := jobMeta{ID: id, Name: jobName(name, script), Started: now.Unix(), Timeout: timeout, Runner: j.mode(), User: j.user}
 	if e := os.Mkdir(j.path(id), 0700); e != nil {
 		return jobInfo{}, e
 	}
 	raw, _ := json.Marshal(meta)
 	scriptPath, outPath := j.path(id, "script"), j.path(id, "output")
-	argv := []string{"/bin/sh", scriptPath}
-	if strings.HasPrefix(script, "#!") {
-		argv = []string{scriptPath}
-	}
 	e := writeFile(j.path(id, "meta.json"), raw, 0600)
 	if e == nil {
 		e = writeFile(scriptPath, []byte(script), 0700)
 	}
 	if e == nil && j.systemd {
-		e = j.startUnit(ctx, id, argv, timeout)
+		e = j.startUnit(ctx, id, script, timeout)
 	} else if e == nil {
+		argv := scriptArgv(script, scriptPath)
 		e = j.startDirect(id, argv, outPath, time.Duration(timeout)*time.Second)
 	}
 	if e != nil {
@@ -208,25 +249,65 @@ func (j *jobRunner) start(ctx context.Context, name, script string, timeout int)
 	return jobInfo{jobMeta: meta, State: "running", ExitCode: -1}, nil
 }
 
-func (j *jobRunner) startUnit(ctx context.Context, id string, argv []string, timeout int) error {
-	quoted := make([]string, len(argv))
-	for i, a := range argv {
-		quoted[i] = shellQuote(a)
-	}
-	run := "#!/bin/sh\nexec " + strings.Join(quoted, " ") + " >" + shellQuote(j.path(id, "output")) + " 2>&1 </dev/null\n"
+// startUnit keeps the job directory root-only: systemd opens the output file and
+// runs the "+" helpers with full privileges, and the pre helper prepares the script
+// in a per-job runtime directory readable by the job user but owned by root.
+func (j *jobRunner) startUnit(ctx context.Context, id, script string, timeout int) error {
+	runtime := "/run/" + jobRuntime(id)
+	pre := "#!/bin/sh\nset -e\nchown 0:0 " + shellQuote(runtime) + "\nchmod 0755 " + shellQuote(runtime) + "\nrm -f " + shellQuote(runtime+"/script") + "\ninstall -m 0555 -o 0 -g 0 " + shellQuote(j.path(id, "script")) + " " + shellQuote(runtime+"/script") + "\n"
 	result := shellQuote(j.path(id, "result"))
 	// systemd passes SERVICE_RESULT/EXIT_CODE/EXIT_STATUS to ExecStopPost, including timeouts and signals.
 	post := "#!/bin/sh\nprintf '%s %s %s\\n' \"$SERVICE_RESULT\" \"$EXIT_CODE\" \"$EXIT_STATUS\" >" + result + ".tmp && mv -f " + result + ".tmp " + result + "\n"
-	if e := writeFile(j.path(id, "run.sh"), []byte(run), 0700); e != nil {
+	if e := writeFile(j.path(id, "pre.sh"), []byte(pre), 0700); e != nil {
 		return e
 	}
 	if e := writeFile(j.path(id, "post.sh"), []byte(post), 0700); e != nil {
 		return e
 	}
-	_, _, e := command(ctx, "systemd-run", "--quiet", "--collect", "--unit="+jobUnit(id), "--description=LiteHelm job "+id,
-		"--property=User=root", "--property=WorkingDirectory=~", "--property=RuntimeMaxSec="+strconv.Itoa(timeout), "--property=TimeoutStopSec=15",
-		"--property=ExecStopPost=/bin/sh "+j.path(id, "post.sh"), "--setenv=LITEHELM_JOB_ID="+id, "--", "/bin/sh", j.path(id, "run.sh"))
+	_, _, e := command(ctx, "systemd-run", j.unitArgs(id, script, timeout)...)
 	return e
+}
+
+func (j *jobRunner) unitArgs(id, script string, timeout int) []string {
+	args := []string{"--quiet", "--collect", "--unit=" + jobUnit(id), "--description=LiteHelm job " + id,
+		"--property=User=" + j.user, "--property=WorkingDirectory=-~",
+		"--property=RuntimeDirectory=" + jobRuntime(id), "--property=RuntimeDirectoryMode=0755",
+		"--property=StandardOutput=append:" + j.path(id, "output"), "--property=StandardError=inherit",
+		"--property=RuntimeMaxSec=" + strconv.Itoa(timeout), "--property=TimeoutStopSec=15",
+		"--property=ExecStartPre=+/bin/sh " + j.path(id, "pre.sh"),
+		"--property=ExecStopPost=+/bin/sh " + j.path(id, "post.sh"),
+		"--setenv=LITEHELM_JOB_ID=" + id}
+	if j.user != "root" {
+		// The unprivileged account cannot regain root through sudo or setuid programs.
+		args = append(args, "--property=NoNewPrivileges=yes")
+	}
+	args = append(args, "--")
+	for _, a := range scriptArgv(script, "/run/"+jobRuntime(id)+"/script") {
+		// systemd expands $VAR in ExecStart arguments; "$$" is a literal dollar.
+		args = append(args, strings.ReplaceAll(a, "$", "$$"))
+	}
+	return args
+}
+
+// scriptArgv runs a script by path without exec permission on its filesystem
+// (/run is often mounted noexec). A "#!" line is interpreted like the kernel
+// does: the interpreter plus at most one optional argument.
+func scriptArgv(script, path string) []string {
+	line, _, _ := strings.Cut(script, "\n")
+	if rest, ok := strings.CutPrefix(line, "#!"); ok {
+		rest = strings.Trim(rest, " \t")
+		interp, arg := rest, ""
+		if i := strings.IndexAny(rest, " \t"); i >= 0 {
+			interp, arg = rest[:i], strings.Trim(rest[i:], " \t")
+		}
+		if interp != "" {
+			if arg != "" {
+				return []string{interp, arg, path}
+			}
+			return []string{interp, path}
+		}
+	}
+	return []string{"/bin/sh", path}
 }
 
 func (j *jobRunner) startDirect(id string, argv []string, outPath string, timeout time.Duration) error {

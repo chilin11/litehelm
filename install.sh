@@ -5,25 +5,28 @@ REPO=chilin11/litehelm
 VERSION=latest
 LOCAL_DIR=
 EXEC=keep
+EXEC_USER=
 WEB=keep
 usage() {
  cat <<'HELP'
 LiteHelm · 轻舵
-Usage: sudo sh install.sh [--version vX.Y.Z] [--local-dir DIRECTORY] [--enable-exec|--disable-exec] [--disable-web|--enable-web]
+Usage: sudo sh install.sh [--version vX.Y.Z] [--local-dir DIRECTORY] [--enable-exec|--disable-exec] [--exec-user USER] [--disable-web|--enable-web]
   --version       Install a specific GitHub release (default: latest)
   --local-dir     Use binaries and SHA256SUMS from a local directory
-  --enable-exec   Allow the app to run arbitrary scripts as the service user (root by default)
-  --disable-exec  Remove script execution again
+  --enable-exec   Allow the app to run arbitrary scripts as an unprivileged user (litehelm, created if missing)
+  --exec-user     Run scripts as another existing account, e.g. root (implies --enable-exec)
+  --disable-exec  Remove script execution again (the litehelm user is kept)
   --disable-web   Stop serving the built-in web UI (API for the app is unaffected)
   --enable-web    Serve the built-in web UI again (default)
   --help          Show help without changing anything
-Existing token, service unit and drop-ins are preserved; script execution and web UI are unchanged unless requested.
+Existing token, service unit and drop-ins are preserved; script execution, script user and web UI are unchanged unless requested.
 HELP
 }
 while [ "$#" -gt 0 ]; do
  case "$1" in
   --version|--local-dir) [ "$#" -ge 2 ] || { usage; exit 1; }; opt=$1; shift; if [ "$opt" = --version ]; then VERSION=$1; else LOCAL_DIR=$1; fi;;
   --enable-exec) EXEC=on;;
+  --exec-user) [ "$#" -ge 2 ] || { usage; exit 1; }; shift; EXEC_USER=$1;;
   --disable-exec) EXEC=off;;
   --disable-web) WEB=off;;
   --enable-web) WEB=on;;
@@ -33,6 +36,13 @@ while [ "$#" -gt 0 ]; do
  shift
 done
 case "$VERSION" in latest|v[0-9]*) ;; *) echo 'Invalid version' >&2; exit 1;; esac
+if [ -n "$EXEC_USER" ]; then
+ case "$EXEC_USER" in [a-z_]*) ;; *) echo 'Invalid --exec-user' >&2; exit 1;; esac
+ case "$EXEC_USER" in *[!a-z0-9_.-]*) echo 'Invalid --exec-user' >&2; exit 1;; esac
+ [ "${#EXEC_USER}" -le 32 ] || { echo 'Invalid --exec-user' >&2; exit 1; }
+ [ "$EXEC" != off ] || { echo '--exec-user cannot be combined with --disable-exec' >&2; exit 1; }
+ EXEC=on
+fi
 case "$VERSION" in *[!a-zA-Z0-9._-]*) echo 'Invalid version' >&2; exit 1;; esac
 [ "$(id -u)" = 0 ] || { echo 'Run with sudo sh install.sh' >&2; exit 1; }
 [ "$(uname -s)" = Linux ] || { echo 'Linux is required' >&2; exit 1; }
@@ -70,6 +80,30 @@ actual=$(sha256sum "$tmp/$asset"); actual=${actual%% *}
 chmod 755 "$tmp/$asset"
 # Smoke-test architecture before replacing anything.
 "$tmp/$asset" -h >/dev/null 2>&1 || { echo 'Binary cannot run on this host' >&2; exit 1; }
+# Script jobs run as a dedicated unprivileged account unless another one is chosen.
+exec_conf=/etc/systemd/system/litehelm.service.d/20-litehelm-exec.conf
+prev_user=
+if [ -f "$exec_conf" ]; then prev_user=$(sed -n 's/^Environment=LITEHELM_EXEC_USER=//p' "$exec_conf" | tail -n 1); fi
+exec_user=${EXEC_USER:-${prev_user:-litehelm}}
+if [ "$EXEC" = on ] || { [ "$EXEC" = keep ] && [ -e "$exec_conf" ]; }; then
+ if ! "$tmp/$asset" -h 2>&1 | grep -q -- '-exec-user'; then
+  if [ "$exec_user" != root ]; then
+   echo "Installed litehelm binary does not support --exec-user; run scripts as root with --exec-user root or upgrade binary" >&2
+   exit 1
+  fi
+ fi
+ if [ "$exec_user" = litehelm ]; then
+  if ! id -u litehelm >/dev/null 2>&1; then
+   command -v useradd >/dev/null || { echo 'useradd is required to create the litehelm script user' >&2; exit 1; }
+   nologin=$(command -v nologin || echo /bin/false)
+   useradd --system --user-group --create-home --home-dir /home/litehelm --shell "$nologin" --comment 'LiteHelm script jobs' litehelm
+   chmod 700 /home/litehelm
+   echo 'Created unprivileged system user litehelm for script jobs'
+  fi
+ elif ! id -u "$exec_user" >/dev/null 2>&1; then
+  echo "Script user $exec_user does not exist; create it first" >&2; exit 1
+ fi
+fi
 install -d -m 700 /etc/litehelm
 if [ ! -e /etc/litehelm/token ]; then
  umask 077
@@ -130,12 +164,14 @@ if [ ! -e "$compat" ]; then
  added_compat=true
 fi
 # Script jobs need a writable state directory under ProtectSystem=strict.
-exec_conf=/etc/systemd/system/litehelm.service.d/20-litehelm-exec.conf
 had_exec=false
 if [ -e "$exec_conf" ]; then cp -p "$exec_conf" "$tmp/exec.conf"; had_exec=true; fi
 if [ "$EXEC" = on ]; then
  install -d -m 755 /etc/systemd/system/litehelm.service.d
- printf '%s\n' '[Service]' '# Managed by install.sh --enable-exec: the app may run arbitrary scripts as this service user.' 'Environment=LITEHELM_ALLOW_EXEC=1' 'StateDirectory=litehelm' 'StateDirectoryMode=0700' > "$exec_conf"
+ {
+  printf '%s\n' '[Service]' '# Managed by install.sh --enable-exec/--exec-user: the app may run arbitrary scripts as the script user.' 'Environment=LITEHELM_ALLOW_EXEC=1' 'StateDirectory=litehelm' 'StateDirectoryMode=0700'
+  if [ "$exec_user" != litehelm ]; then printf 'Environment=LITEHELM_EXEC_USER=%s\n' "$exec_user"; fi
+ } > "$exec_conf"
  chmod 644 "$exec_conf"
 elif [ "$EXEC" = off ]; then
  rm -f "$exec_conf"
@@ -171,5 +207,5 @@ sleep 2
 systemctl is-active --quiet litehelm.service || rollback
 systemctl enable litehelm.service
 printf '%s\n' 'LiteHelm is running at http://127.0.0.1:9091' 'Publish this local endpoint using your HTTPS reverse proxy; the same origin serves the app API and the web UI.' 'Read the token locally: sudo cat /etc/litehelm/token' 'Existing token, unit and user drop-ins were preserved; managed openat2 compatibility setting installed.'
-if [ -e "$exec_conf" ]; then echo 'Script execution: enabled (disable with --disable-exec)'; else echo 'Script execution: disabled (enable with --enable-exec)'; fi
+if [ -e "$exec_conf" ]; then echo "Script execution: enabled as $exec_user (change with --exec-user, disable with --disable-exec)"; else echo 'Script execution: disabled (enable with --enable-exec)'; fi
 if [ -e "$web_conf" ]; then echo 'Web UI: disabled (enable with --enable-web)'; else echo 'Web UI: enabled at your HTTPS origin (disable with --disable-web)'; fi
