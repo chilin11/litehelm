@@ -29,7 +29,7 @@ HELP
 while [ "$#" -gt 0 ]; do
  case "$1" in
   --version|--local-dir|--manual-dir)
-   [ "$#" -ge 2 ] && [ -n "$2" ] || { usage; exit 1; }
+   if [ "$#" -lt 2 ] || [ -z "$2" ]; then usage; exit 1; fi
    opt=$1; shift
    case "$opt" in --version) VERSION=$1;; --local-dir) LOCAL_DIR=$1;; --manual-dir) MANUAL_DIR=$1;; esac;;
   --enable-exec) EXEC=on;;
@@ -59,7 +59,9 @@ if [ -z "$MANUAL_DIR" ]; then
  # A systemctl executable or a stale runtime directory alone is not sufficient.
  systemctl show --property=Version >/dev/null || { echo 'Cannot reach the systemd manager; installation left untouched' >&2; exit 1; }
 else
- [ "$EXEC" = keep ] && [ "$WEB" = keep ] || { echo '--manual-dir cannot be combined with exec/web installer options; pass runtime flags to the binary instead' >&2; exit 1; }
+ if [ "$EXEC" != keep ] || [ "$WEB" != keep ]; then
+  echo '--manual-dir cannot be combined with exec/web installer options; pass runtime flags to the binary instead' >&2; exit 1
+ fi
  case "$MANUAL_DIR" in
   /*) ;;
   *) echo '--manual-dir must be an absolute path' >&2; exit 1;;
@@ -81,7 +83,9 @@ else
  case "$(stat -c %a "$MANUAL_DIR")" in *00) ;; *) echo 'Manual directory must be private (mode 0700); adjust its permissions yourself' >&2; exit 1;; esac
  for name in litehelm token; do
   if [ -e "$MANUAL_DIR/$name" ] || [ -L "$MANUAL_DIR/$name" ]; then
-   [ -f "$MANUAL_DIR/$name" ] && [ ! -L "$MANUAL_DIR/$name" ] || { echo "Manual $name must be a regular non-symlink file" >&2; exit 1; }
+   if [ ! -f "$MANUAL_DIR/$name" ] || [ -L "$MANUAL_DIR/$name" ]; then
+    echo "Manual $name must be a regular non-symlink file" >&2; exit 1
+   fi
   fi
  done
  if [ -e "$MANUAL_DIR/token" ]; then

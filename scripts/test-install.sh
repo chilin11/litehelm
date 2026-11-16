@@ -22,6 +22,8 @@ FIXTURE
  (cd "$tmp/assets" && sha256sum "$asset" > SHA256SUMS)
  # Manual deployment must not call managed-install commands, even on systemd hosts.
  for name in systemctl useradd install; do
+  # $0 is intentionally expanded when the generated command runs.
+  # shellcheck disable=SC2016
   printf '%s\n' '#!/bin/sh' 'echo "Unexpected system command: $0" >&2' 'exit 97' > "$tmp/bin/$name"
   chmod 755 "$tmp/bin/$name"
  done
