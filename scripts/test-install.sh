@@ -1,8 +1,57 @@
 #!/bin/sh
-# CI-only: a disposable systemd Linux runner, root privileges required.
+# Default: CI-only disposable systemd runner, root required.
+# --manual-only: local installer fixtures in a temporary directory; no root/services/network.
 set -eu
-[ "${LITEHELM_TEST_DISPOSABLE:-}" = 1 ] || { echo 'Set LITEHELM_TEST_DISPOSABLE=1 only on a disposable runner'; exit 1; }
 base=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+if [ "${1:-}" = --manual-only ]; then
+ tmp=$(mktemp -d)
+ trap 'rm -rf "$tmp"' EXIT
+ case "$(uname -m)" in
+  x86_64) asset=litehelm-linux-amd64;; aarch64|arm64) asset=litehelm-linux-arm64;; armv7l|armv8l) asset=litehelm-linux-armv7;;
+  *) echo 'Unsupported fixture architecture'; exit 1;;
+ esac
+ mkdir "$tmp/assets" "$tmp/bin"
+ cat > "$tmp/assets/$asset" <<'FIXTURE'
+#!/bin/sh
+case "${1:-}" in
+ -h) exit 0;;
+ -generate-token) printf '%s\n' 'manual-test-token-not-for-production-0123456789abcdef'; exit 0;;
+ *) exit 1;;
+esac
+FIXTURE
+ (cd "$tmp/assets" && sha256sum "$asset" > SHA256SUMS)
+ # Manual deployment must not call managed-install commands, even on systemd hosts.
+ for name in systemctl useradd install; do
+  printf '%s\n' '#!/bin/sh' 'echo "Unexpected system command: $0" >&2' 'exit 97' > "$tmp/bin/$name"
+  chmod 755 "$tmp/bin/$name"
+ done
+ PATH=$tmp/bin:$PATH
+ export PATH
+ manual=$tmp/private\ deployment
+ sh "$base/install.sh" --local-dir "$tmp/assets" --manual-dir "$manual" > "$tmp/install.log"
+ [ -x "$manual/litehelm" ]
+ [ "$(stat -c %a "$manual")" = 700 ]
+ [ "$(stat -c %a "$manual/token")" = 600 ]
+ [ "$("$manual/litehelm" -generate-token)" = "$(head -n 1 "$manual/token")" ]
+ token_hash=$(sha256sum "$manual/token")
+ binary_hash=$(sha256sum "$manual/litehelm")
+ sh "$base/install.sh" --local-dir "$tmp/assets" --manual-dir "$manual" > "$tmp/install.log"
+ [ "$token_hash" = "$(sha256sum "$manual/token")" ]
+ printf '%064d  %s\n' 0 "$asset" > "$tmp/assets/SHA256SUMS"
+ if sh "$base/install.sh" --local-dir "$tmp/assets" --manual-dir "$manual" > "$tmp/install.log" 2>&1; then echo 'Accepted bad manual checksum'; exit 1; fi
+ [ "$binary_hash" = "$(sha256sum "$manual/litehelm")" ]
+ [ "$token_hash" = "$(sha256sum "$manual/token")" ]
+ (cd "$tmp/assets" && sha256sum "$asset" > SHA256SUMS)
+ if sh "$base/install.sh" --local-dir "$tmp/assets" --manual-dir "$manual" --enable-exec > "$tmp/install.log" 2>&1; then echo 'Accepted system configuration in manual mode'; exit 1; fi
+ mkdir -m 700 "$tmp/linked"
+ ln -s "$manual/token" "$tmp/linked/token"
+ if sh "$base/install.sh" --local-dir "$tmp/assets" --manual-dir "$tmp/linked" > "$tmp/install.log" 2>&1; then echo 'Accepted manual token symlink'; exit 1; fi
+ [ "$token_hash" = "$(sha256sum "$manual/token")" ]
+ [ ! -e "$manual/.install.lock" ]
+ printf '%s\n' 'Manual installer fixtures (not a real NAS/binary): private path, checksum, token preservation, symlink rejection, no managed system commands: PASS'
+ exit 0
+fi
+[ "${LITEHELM_TEST_DISPOSABLE:-}" = 1 ] || { echo 'Set LITEHELM_TEST_DISPOSABLE=1 only on a disposable runner (or use --manual-only)'; exit 1; }
 [ ! -e /etc/systemd/system/litehelm.service ] || { echo 'Refusing existing installation'; exit 1; }
 tmp=$(mktemp -d)
 cleanup() {

@@ -36,6 +36,7 @@ public final class MainActivity extends Activity {
     private TextView connection, dashMessage, dashStamp, settingsError, processMessage, serviceMessage;
     private TextView hostname, os, uptime, cpu, load, memory, memoryBytes, disk, diskBytes, swap, rx, tx, counters;
     private Meter cpuMeter, memMeter, diskMeter;
+    private LinearLayout resourceAlert;
     private Button dashRefresh, processRefresh, serviceRefresh, saveButton;
     private EditText addressInput, tokenInput, processSearch, serviceSearch;
     private ListView processList, serviceList;
@@ -53,6 +54,9 @@ public final class MainActivity extends Activity {
     private Dialog sheet;
     private State state;
     private final Runnable poll=()->{ if(foreground && page==0 && config!=null && sheet==null) loadCurrent(); };
+    /** Foreground-only UI re-render when a shown monitor report ages out; never issues a request. */
+    private final Runnable monitorExpiry=()->{ if(foreground && !destroyed) renderMonitor(); };
+    private static final long OVERVIEW_POLL_MS=10000;
     // Scripts page (index 4): editor + history list, or one job's detail when jobView is a job id.
     private LinearLayout scripts, jobListArea, jobDisabled, jobEditor, jobHistory, jobRows, jobDetail, jobActions;
     private TextView scriptMessage, jobIdentity, jobWarning, jobTitle, jobStatus, jobTimes, jobTrimmed, jobOut;
@@ -114,7 +118,7 @@ public final class MainActivity extends Activity {
         if(config!=null) loadCurrent();
     }
     @Override protected void onPause() {
-        foreground=false; generation++; stopPolls(); resetRates();
+        foreground=false; generation++; stopPolls(); handler.removeCallbacks(monitorExpiry); resetRates();
         if(sheet!=null)sheet.dismiss();
         systemFresh=false; processesFresh=false; servicesFresh=false;
         api.cancelRead(); super.onPause();
@@ -222,7 +226,7 @@ public final class MainActivity extends Activity {
     private void stopPolls() {handler.removeCallbacks(poll);handler.removeCallbacks(jobTick);}
     private void schedulePoll() {
         stopPolls();boolean mutating=ApiClient.MUTATING.get(),open=sheet!=null;
-        if(RequestPolicy.poll(foreground,page,config!=null,busy,mutating,open))handler.postDelayed(poll,5000);
+        if(RequestPolicy.poll(foreground,page,config!=null,busy,mutating,open))handler.postDelayed(poll,OVERVIEW_POLL_MS);
         else if(RequestPolicy.jobPoll(foreground,page,config!=null,busy,mutating,open,jobFollow))handler.postDelayed(jobTick,jobDelay);
     }
     private void loadCurrent() {
@@ -247,6 +251,8 @@ public final class MainActivity extends Activity {
         favoritesArea=column();dashboard.addView(favoritesArea);renderFavorites();
         LinearLayout help=row();help.addView(compact(t(R.string.retry),()->loadCurrent()),new LinearLayout.LayoutParams(0,-2,1));Button check=compact(t(R.string.check_connection),()->switchPage(3,true));LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(0,-2,1);hp.leftMargin=dp(8);help.addView(check,hp);help.setTag("errorHelp");dashboard.addView(help);help.setVisibility(View.GONE);
         dashboardData=column();gap(dashboardData,24);LinearLayout up=row();weight(up,label(t(R.string.uptime)));uptime=text("—",14,TEXT);up.addView(uptime);dashboardData.addView(up);gap(dashboardData,24);
+        resourceAlert=column();resourceAlert.setPadding(dp(16),dp(14),dp(16),dp(14));GradientDrawable alertBg=shape(SURFACE,16,false);alertBg.setStroke(dp(1),WARN);resourceAlert.setBackground(alertBg);resourceAlert.setVisibility(View.GONE);
+        LinearLayout.LayoutParams ap=new LinearLayout.LayoutParams(-1,-2);ap.bottomMargin=dp(16);dashboardData.addView(resourceAlert,ap);
         LinearLayout resource=panel();TextView resourceTitle=label(t(R.string.resources));resourceTitle.setTag("cores");resource.addView(resourceTitle);gap(resource,14);
         LinearLayout cpuRow=column();LinearLayout cpuCol=column();addText(cpuCol,"CPU",12,SECONDARY);gap(cpuCol,4);cpu=text("—",48,MINT);cpuCol.addView(cpu);cpuRow.addView(cpuCol);
         load=text(t(R.string.load_value,"—"),12,SECONDARY);gap(cpuRow,10);cpuRow.addView(load);resource.addView(cpuRow);gap(resource,12);cpuMeter=new Meter(MINT,"CPU");resource.addView(cpuMeter,new LinearLayout.LayoutParams(-1,dp(3)));divider(resource);
@@ -268,6 +274,7 @@ public final class MainActivity extends Activity {
         double cpuValue=number(system,"cpu_percent");cpu.setText(percent(cpuValue));cpuMeter.set(cpuValue);
         JSONArray loads=system.optJSONArray("load");load.setText(t(R.string.load_value,loads!=null&&loads.length()>=3?decimal(loads.optDouble(0,Double.NaN))+" / "+decimal(loads.optDouble(1,Double.NaN))+" / "+decimal(loads.optDouble(2,Double.NaN)):"—"));
         resource(system.optJSONObject("memory"),memory,memoryBytes,memMeter);resource(system.optJSONObject("disk"),disk,diskBytes,diskMeter);
+        renderMonitor();
         JSONObject sw=system.optJSONObject("swap");double st=number(sw,"total");swap.setText("Swap   "+(st==0?t(R.string.swap_off):bytes(number(sw,"used"))+" / "+bytes(st)));
         if(networkSample){
             JSONObject net=system.optJSONObject("network");long timestamp=system.optLong("timestamp",-1);long nr=net==null?-1:net.optLong("rx_bytes",-1), nt=net==null?-1:net.optLong("tx_bytes",-1);
@@ -278,6 +285,23 @@ public final class MainActivity extends Activity {
             networkSample=false;
         }
         dashStamp.setText(t(systemFresh?R.string.updated_at:R.string.stale_last_success,clock(lastSystemSuccess)));dashStamp.setTextColor(systemFresh?MUTED:WARN);dashboardData.setAlpha(systemFresh?1f:.58f);
+    }
+    /** Shows only the server's resource_monitor verdict; no local threshold comparison. */
+    private void renderMonitor(){
+        if(resourceAlert==null)return;handler.removeCallbacks(monitorExpiry);resourceAlert.removeAllViews();
+        if(system==null){resourceAlert.setVisibility(View.GONE);return;}
+        long now=System.currentTimeMillis();ResourceAlert.Report r=ResourceAlert.read(system,systemFresh,lastSystemSuccess,now);
+        boolean alert=r.status==ResourceAlert.ALERT, ok=r.status==ResourceAlert.OK;
+        GradientDrawable bg=shape(SURFACE,16,false);bg.setStroke(dp(1),alert?WARN:LINE);resourceAlert.setBackground(bg);
+        TextView title=text(t(alert?R.string.resource_alert_title:ok?R.string.monitor_ok_title:R.string.monitor_unavailable_title),15,ok?MINT:WARN);
+        title.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);resourceAlert.addView(title);
+        String threshold=Double.isFinite(r.threshold)?(r.threshold==Math.rint(r.threshold)?String.format(Locale.ROOT,"%.0f\u00a0%%",r.threshold):percent(r.threshold)):"—";
+        for(ResourceAlert.Item item:r.items){String name="cpu".equals(item.resource)?"CPU":"memory".equals(item.resource)?t(R.string.memory):"disk".equals(item.resource)?t(R.string.disk):item.resource;gap(resourceAlert,8);addText(resourceAlert,t(R.string.resource_alert_item,name,percent(item.percent),threshold),14,TEXT);}
+        int reason=r.status==ResourceAlert.OFFLINE?R.string.monitor_offline:r.status==ResourceAlert.MISSING?R.string.monitor_missing:r.status==ResourceAlert.WARMING?R.string.monitor_warming:r.status==ResourceAlert.ERROR?R.string.monitor_error:r.status==ResourceAlert.EXPIRED?R.string.monitor_expired:r.status==ResourceAlert.INVALID?R.string.monitor_invalid:0;
+        if(reason!=0){gap(resourceAlert,8);addText(resourceAlert,t(reason),14,TEXT);}
+        if(Double.isFinite(r.threshold)){gap(resourceAlert,8);addText(resourceAlert,t(R.string.monitor_meta,threshold,clock(r.sampledAt*1000)),12,SECONDARY);}
+        gap(resourceAlert,8);addText(resourceAlert,t(r.current()?R.string.resource_alert_note:R.string.monitor_not_healthy_note),12,SECONDARY);resourceAlert.setVisibility(View.VISIBLE);
+        if(r.current()&&foreground&&!destroyed)handler.postDelayed(monitorExpiry,Math.max(0L,(long)(ResourceAlert.MAX_AGE_SECONDS*1000)-(now-lastSystemSuccess)));
     }
     private void resource(JSONObject source,TextView value,TextView detail,Meter meter){double total=number(source,"total"),used=number(source,"used");double ratio=total>0&&used>=0?100*used/total:Double.NaN;value.setText(percent(ratio));detail.setText(Double.isFinite(ratio)?bytes(used)+" / "+bytes(total):t(R.string.unavailable_now));meter.set(ratio);}
     private static double number(JSONObject j,String key){return j==null?Double.NaN:j.optDouble(key,Double.NaN);}

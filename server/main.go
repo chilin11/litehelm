@@ -46,6 +46,8 @@ type app struct {
 	execReason string
 	// web serves the embedded browser UI on non-API paths of the same listener.
 	web bool
+	// monitor is initialized before serving; requests only read cached samples.
+	monitor *resourceMonitor
 }
 
 func main() {
@@ -90,7 +92,13 @@ func main() {
 	if len(token) < 32 {
 		log.Fatal("token must contain at least 32 characters; use -generate-token")
 	}
-	a := &app{token: sha256.Sum256([]byte(token)), power: *power, slots: make(chan struct{}, 2), unit: os.Getenv("LITEHELM_UNIT"), web: *web}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	a := &app{token: sha256.Sum256([]byte(token)), power: *power, slots: make(chan struct{}, 2), unit: os.Getenv("LITEHELM_UNIT"), web: *web, monitor: startResourceMonitor(ctx)}
+	defer func() {
+		stop()
+		<-a.monitor.done
+	}()
 	if a.unit == "" {
 		a.unit = "litehelm.service"
 	}
@@ -103,8 +111,6 @@ func main() {
 		}
 	}
 	srv := &http.Server{Addr: *listen, Handler: a, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 25 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	shutdownDone := make(chan struct{})
 	go func() {
 		<-ctx.Done()
@@ -119,6 +125,9 @@ func main() {
 	}
 	log.Printf("LiteHelm listening on %s (power=%t exec=%s web=%t)", *listen, *power, execMode, *web)
 	if e := srv.ListenAndServe(); e != nil && !errors.Is(e, http.ErrServerClosed) {
+		stop()
+		<-shutdownDone
+		<-a.monitor.done
 		log.Fatal(e)
 	}
 	<-shutdownDone
@@ -232,68 +241,8 @@ func uptime() float64 {
 	return n
 }
 func systemd() bool { _, e := os.Stat("/run/systemd/system"); return e == nil }
-func cpuTicks() (uint64, uint64, error) {
-	b, e := os.ReadFile("/proc/stat")
-	if e != nil {
-		return 0, 0, e
-	}
-	line := strings.SplitN(string(b), "\n", 2)[0]
-	f := strings.Fields(line)
-	if len(f) < 6 || f[0] != "cpu" {
-		return 0, 0, errors.New("Invalid /proc/stat")
-	}
-	var total, idle uint64
-	for i := 1; i < len(f) && i <= 8; i++ {
-		n := number(f[i])
-		total += n
-		if i == 4 || i == 5 {
-			idle += n
-		}
-	}
-	return total, idle, nil
-}
 func (a *app) system(w http.ResponseWriter, r *http.Request) {
-	t1, i1, e := cpuTicks()
-	if e != nil {
-		fail(w, 500, e.Error())
-		return
-	}
-	select {
-	case <-r.Context().Done():
-		return
-	case <-time.After(150 * time.Millisecond):
-	}
-	t2, i2, e := cpuTicks()
-	if e != nil {
-		fail(w, 500, e.Error())
-		return
-	}
-	cpu := 0.0
-	if t2 > t1 && i2 >= i1 && i2-i1 <= t2-t1 {
-		cpu = 100 * float64(t2-t1-(i2-i1)) / float64(t2-t1)
-	}
-	mem := map[string]uint64{}
-	for _, l := range strings.Split(file("/proc/meminfo"), "\n") {
-		f := strings.Fields(l)
-		if len(f) >= 2 {
-			mem[strings.TrimSuffix(f[0], ":")] = number(f[1]) * 1024
-		}
-	}
-	avail, ok := mem["MemAvailable"]
-	if !ok {
-		avail = mem["MemFree"] + mem["Buffers"] + mem["Cached"]
-	}
-	if avail > mem["MemTotal"] {
-		avail = mem["MemTotal"]
-	}
-	var fs syscall.Statfs_t
-	if e = syscall.Statfs("/", &fs); e != nil {
-		fail(w, 500, "Cannot inspect root filesystem")
-		return
-	}
-	total := fs.Blocks * uint64(fs.Bsize)
-	free := fs.Bavail * uint64(fs.Bsize)
-	used := (fs.Blocks - fs.Bfree) * uint64(fs.Bsize)
+	resources := a.monitor.snapshot(time.Now())
 	var rx, tx uint64
 	for _, l := range strings.Split(file("/proc/net/dev"), "\n") {
 		parts := strings.SplitN(l, ":", 2)
@@ -318,7 +267,7 @@ func (a *app) system(w http.ResponseWriter, r *http.Request) {
 			osName = strings.Trim(strings.TrimPrefix(l, "PRETTY_NAME="), "\"")
 		}
 	}
-	output(w, 200, map[string]any{"version": version, "hostname": name, "os": osName, "arch": runtime.GOARCH, "uptime_seconds": uint64(uptime()), "cpu_percent": cpu, "cpu_cores": runtime.NumCPU(), "load": load, "memory": map[string]uint64{"total": mem["MemTotal"], "used": mem["MemTotal"] - avail, "available": avail}, "swap": map[string]uint64{"total": mem["SwapTotal"], "used": mem["SwapTotal"] - mem["SwapFree"]}, "disk": map[string]uint64{"total": total, "used": used, "free": free}, "network": map[string]uint64{"rx_bytes": rx, "tx_bytes": tx}, "timestamp": time.Now().Unix(), "capabilities": map[string]bool{"process_signal": os.Geteuid() == 0, "service_control": os.Geteuid() == 0 && systemd(), "power": a.power && os.Geteuid() == 0 && systemd(), "exec": a.jobs != nil}})
+	output(w, 200, map[string]any{"version": version, "hostname": name, "os": osName, "arch": runtime.GOARCH, "uptime_seconds": uint64(uptime()), "cpu_percent": resources.CPUPercent, "cpu_cores": runtime.NumCPU(), "load": load, "memory": resources.Memory, "swap": resources.Swap, "disk": resources.Disk, "resource_monitor": resources.Monitor, "network": map[string]uint64{"rx_bytes": rx, "tx_bytes": tx}, "timestamp": time.Now().Unix(), "capabilities": map[string]bool{"process_signal": os.Geteuid() == 0, "service_control": os.Geteuid() == 0 && systemd(), "power": a.power && os.Geteuid() == 0 && systemd(), "exec": a.jobs != nil}})
 }
 
 type process struct {

@@ -1,9 +1,10 @@
 #!/bin/sh
-# LiteHelm installer: native Linux binary + systemd. No package manager changes.
+# LiteHelm installer: native Linux binary + systemd, or explicit private-directory deployment.
 set -eu
 REPO=chilin11/litehelm
 VERSION=latest
 LOCAL_DIR=
+MANUAL_DIR=
 EXEC=keep
 EXEC_USER=
 WEB=keep
@@ -11,8 +12,10 @@ usage() {
  cat <<'HELP'
 LiteHelm · 轻舵
 Usage: sudo sh install.sh [--version vX.Y.Z] [--local-dir DIRECTORY] [--enable-exec|--disable-exec] [--exec-user USER] [--disable-web|--enable-web]
+       sh install.sh --manual-dir /absolute/private/directory [--version vX.Y.Z] [--local-dir DIRECTORY]
   --version       Install a specific GitHub release (default: latest)
   --local-dir     Use binaries and SHA256SUMS from a local directory
+  --manual-dir    Deploy binary and token only; no root, systemd, account changes or automatic startup
   --enable-exec   Allow the app to run arbitrary scripts as an unprivileged user (litehelm, created if missing)
   --exec-user     Run scripts as another existing account, e.g. root (implies --enable-exec)
   --disable-exec  Remove script execution again (the litehelm user is kept)
@@ -20,11 +23,15 @@ Usage: sudo sh install.sh [--version vX.Y.Z] [--local-dir DIRECTORY] [--enable-e
   --enable-web    Serve the built-in web UI again (default)
   --help          Show help without changing anything
 Existing token, service unit and drop-ins are preserved; script execution, script user and web UI are unchanged unless requested.
+Manual mode preserves its own token and never modifies an existing system installation. Configure runtime flags when starting it.
 HELP
 }
 while [ "$#" -gt 0 ]; do
  case "$1" in
-  --version|--local-dir) [ "$#" -ge 2 ] || { usage; exit 1; }; opt=$1; shift; if [ "$opt" = --version ]; then VERSION=$1; else LOCAL_DIR=$1; fi;;
+  --version|--local-dir|--manual-dir)
+   [ "$#" -ge 2 ] && [ -n "$2" ] || { usage; exit 1; }
+   opt=$1; shift
+   case "$opt" in --version) VERSION=$1;; --local-dir) LOCAL_DIR=$1;; --manual-dir) MANUAL_DIR=$1;; esac;;
   --enable-exec) EXEC=on;;
   --exec-user) [ "$#" -ge 2 ] || { usage; exit 1; }; shift; EXEC_USER=$1;;
   --disable-exec) EXEC=off;;
@@ -44,10 +51,43 @@ if [ -n "$EXEC_USER" ]; then
  EXEC=on
 fi
 case "$VERSION" in *[!a-zA-Z0-9._-]*) echo 'Invalid version' >&2; exit 1;; esac
-[ "$(id -u)" = 0 ] || { echo 'Run with sudo sh install.sh' >&2; exit 1; }
 [ "$(uname -s)" = Linux ] || { echo 'Linux is required' >&2; exit 1; }
-command -v systemctl >/dev/null || { echo 'Installer requires systemd; see README for manual startup' >&2; exit 1; }
-[ -d /run/systemd/system ] || { echo 'systemd must be running' >&2; exit 1; }
+if [ -z "$MANUAL_DIR" ]; then
+ command -v systemctl >/dev/null || { echo 'System install requires systemd; use --manual-dir /absolute/private/directory (no sudo) on NAS/non-systemd hosts' >&2; exit 1; }
+ [ -d /run/systemd/system ] || { echo 'systemd must be running; use --manual-dir /absolute/private/directory (no sudo) instead' >&2; exit 1; }
+ [ "$(id -u)" = 0 ] || { echo 'Run system installation with sudo sh install.sh, or use --manual-dir without sudo' >&2; exit 1; }
+ # A systemctl executable or a stale runtime directory alone is not sufficient.
+ systemctl show --property=Version >/dev/null || { echo 'Cannot reach the systemd manager; installation left untouched' >&2; exit 1; }
+else
+ [ "$EXEC" = keep ] && [ "$WEB" = keep ] || { echo '--manual-dir cannot be combined with exec/web installer options; pass runtime flags to the binary instead' >&2; exit 1; }
+ case "$MANUAL_DIR" in
+  /*) ;;
+  *) echo '--manual-dir must be an absolute path' >&2; exit 1;;
+ esac
+ case "$MANUAL_DIR" in
+  /|*/|*//*|*/./*|*/../*|*/.|*/..) echo '--manual-dir must be a normalized private directory path, not /' >&2; exit 1;;
+ esac
+ command -v stat >/dev/null || { echo 'stat with -c support is required for manual deployment (GNU or BusyBox)' >&2; exit 1; }
+ # Reject symbolic links in every component, including a dangling final link.
+ rest=${MANUAL_DIR#/}; checked=
+ while [ -n "$rest" ]; do
+  part=${rest%%/*}; checked=$checked/$part
+  [ ! -L "$checked" ] || { echo 'Manual directory must not contain symbolic links' >&2; exit 1; }
+  if [ "$rest" = "$part" ]; then rest=; else rest=${rest#*/}; fi
+ done
+ umask 077
+ mkdir -p "$MANUAL_DIR"
+ [ "$(stat -c %u "$MANUAL_DIR")" = "$(id -u)" ] || { echo 'Manual directory must be owned by the current user' >&2; exit 1; }
+ case "$(stat -c %a "$MANUAL_DIR")" in *00) ;; *) echo 'Manual directory must be private (mode 0700); adjust its permissions yourself' >&2; exit 1;; esac
+ for name in litehelm token; do
+  if [ -e "$MANUAL_DIR/$name" ] || [ -L "$MANUAL_DIR/$name" ]; then
+   [ -f "$MANUAL_DIR/$name" ] && [ ! -L "$MANUAL_DIR/$name" ] || { echo "Manual $name must be a regular non-symlink file" >&2; exit 1; }
+  fi
+ done
+ if [ -e "$MANUAL_DIR/token" ]; then
+  [ "$(stat -c %u:%a "$MANUAL_DIR/token")" = "$(id -u):600" ] || { echo 'Existing manual token must be owned by the current user with mode 0600; left untouched' >&2; exit 1; }
+ fi
+fi
 case "$(uname -m)" in
  x86_64) arch=amd64;; aarch64|arm64) arch=arm64;; armv7l|armv8l) arch=armv7;;
  *) echo 'Unsupported architecture; build server from source' >&2; exit 1;;
@@ -55,12 +95,18 @@ esac
 command -v sha256sum >/dev/null || { echo 'sha256sum is required' >&2; exit 1; }
 # mkdir is an atomic lock and works on minimal systems without flock.
 lock=/run/litehelm-install.lock
-mkdir "$lock" 2>/dev/null || { echo 'Another install is running; remove stale /run/litehelm-install.lock if necessary' >&2; exit 1; }
+if [ -n "$MANUAL_DIR" ]; then lock=$MANUAL_DIR/.install.lock; fi
+mkdir "$lock" 2>/dev/null || { echo "Cannot lock $lock; check access or a concurrent/stale installation" >&2; exit 1; }
 tmp=
 cleanup() { [ -z "$tmp" ] || rm -rf "$tmp"; rmdir "$lock" 2>/dev/null || true; }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
-tmp=$(mktemp -d /tmp/litehelm-install.XXXXXX)
+if [ -n "$MANUAL_DIR" ]; then
+ # Test execution on the destination filesystem as well (NAS shares may be noexec).
+ tmp=$(mktemp -d "$MANUAL_DIR/.install.XXXXXX")
+else
+ tmp=$(mktemp -d /tmp/litehelm-install.XXXXXX)
+fi
 asset=litehelm-linux-$arch
 if [ -n "$LOCAL_DIR" ]; then
  if [ ! -f "$LOCAL_DIR/$asset" ] || [ ! -f "$LOCAL_DIR/SHA256SUMS" ]; then echo 'Local directory must contain binary and SHA256SUMS' >&2; exit 1; fi
@@ -79,7 +125,20 @@ actual=$(sha256sum "$tmp/$asset"); actual=${actual%% *}
 [ "$actual" = "$expected" ] || { echo 'SHA256 mismatch; installed version left untouched' >&2; exit 1; }
 chmod 755 "$tmp/$asset"
 # Smoke-test architecture before replacing anything.
-"$tmp/$asset" -h >/dev/null 2>&1 || { echo 'Binary cannot run on this host' >&2; exit 1; }
+"$tmp/$asset" -h >/dev/null 2>&1 || { echo 'Binary cannot run on this host/filesystem; check CPU architecture, kernel and noexec mount options' >&2; exit 1; }
+if [ -n "$MANUAL_DIR" ]; then
+ if [ ! -e "$MANUAL_DIR/token" ]; then
+  "$tmp/$asset" -generate-token > "$tmp/token"
+  chmod 600 "$tmp/token"
+  # Exclusive creation: never replace a token created by another invocation.
+  ln "$tmp/token" "$MANUAL_DIR/token"
+ fi
+ # Same-filesystem atomic replacement; an already-running process is not restarted.
+ mv -f "$tmp/$asset" "$MANUAL_DIR/litehelm"
+ printf 'Manual deployment ready in %s\n' "$MANUAL_DIR"
+ printf '%s\n' 'From that directory run: GOMEMLIMIT=32MiB GOGC=75 ./litehelm -token-file ./token' 'No service was installed or restarted. Token preserved; configure your own foreground supervisor and HTTPS reverse proxy.' 'This mode does not inherit the systemd sandbox. Prefer an unprivileged NAS account; scripts and power control are off by default.'
+ exit 0
+fi
 # Script jobs run as a dedicated unprivileged account unless another one is chosen.
 exec_conf=/etc/systemd/system/litehelm.service.d/20-litehelm-exec.conf
 prev_user=

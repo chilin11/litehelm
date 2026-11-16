@@ -85,6 +85,7 @@ const ICONS = {
   power: 'M12 3v8|M6.3 6.3a8 8 0 1 0 11.4 0',
   lock: 'M6 11h12v9H6z|M8 11V8a4 4 0 0 1 8 0v3',
   copy: 'M8 8h11v11H8z|M5 16V5h11',
+  alert: 'M12 9v4M12 17h.01|M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z',
 };
 function icon(name) {
   const s = document.createElementNS(SVG, 'svg');
@@ -148,8 +149,66 @@ function bytes(n) {
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
   return (i === 0 ? String(Math.round(n)) : n.toFixed(n >= 100 ? 0 : 1)) + ' ' + u[i];
 }
-const ratio = (used, total) => (fin(used) && fin(total) && total > 0 ? (used / total) * 100 : NaN);
+const ratio = (used, total) => (fin(used) && fin(total) && total > 0 && used >= 0 && used <= total ? (used / total) * 100 : NaN);
 const pctText = (p) => (fin(p) ? p.toFixed(1) + ' %' : DASH);
+function parseResourceMonitor(d, fresh = true) {
+  if (!d || typeof d !== 'object') {
+    return { state: 'missing', threshold: null, alerts: [], sampledAt: null };
+  }
+  const rm = d.resource_monitor;
+  if (!rm || typeof rm !== 'object' || Array.isArray(rm)) {
+    return { state: 'missing', threshold: null, alerts: [], sampledAt: null };
+  }
+  const rawState = typeof rm.state === 'string' ? rm.state.trim().toLowerCase() : '';
+  const sampledAt = fin(rm.sampled_at) && rm.sampled_at > 0 ? rm.sampled_at : null;
+  const threshold = fin(rm.threshold_percent) && rm.threshold_percent >= 0 && rm.threshold_percent <= 100
+    ? rm.threshold_percent
+    : null;
+
+  const validNamePattern = /^[a-zA-Z0-9_-]{1,32}$/;
+  const alerts = [];
+  if (Array.isArray(rm.alerts)) {
+    for (const item of rm.alerts) {
+      if (!item || typeof item !== 'object') continue;
+      const res = typeof item.resource === 'string' ? item.resource.trim().toLowerCase() : (typeof item.kind === 'string' ? item.kind.trim().toLowerCase() : '');
+      const pct = item.percent;
+      if (validNamePattern.test(res) && fin(pct) && pct >= 0 && pct <= 100) {
+        alerts.push({ resource: res, percent: pct });
+      }
+    }
+  }
+
+  if (rawState === 'warming_up') {
+    return { state: 'warming_up', threshold, alerts: [], sampledAt };
+  }
+  if (rawState === 'error') {
+    return { state: 'error', threshold, alerts: [], sampledAt };
+  }
+  if (rawState === 'expired') {
+    return { state: 'expired', threshold, alerts, sampledAt };
+  }
+  if (rawState !== 'ok' || !Array.isArray(rm.alerts)) {
+    return { state: 'error', threshold, alerts: [], sampledAt };
+  }
+
+  if (!fresh) {
+    return { state: 'expired', threshold, alerts, sampledAt };
+  }
+  if (!sampledAt) {
+    return { state: 'error', threshold, alerts: [], sampledAt: null };
+  }
+  const nowSec = fin(d.timestamp) && d.timestamp > 0 ? d.timestamp : (Date.now() / 1000);
+  const age = nowSec - sampledAt;
+  if (age > 60 || age < -30) {
+    return { state: 'expired', threshold, alerts, sampledAt };
+  }
+
+  return { state: 'ok', threshold, alerts, sampledAt };
+}
+function evaluateResourceAlerts(d, fresh = true) {
+  const m = parseResourceMonitor(d, fresh);
+  return m.state === 'ok' ? m.alerts : [];
+}
 function duration(s) {
   if (!fin(s) || s < 0) return DASH;
   const d = Math.floor(s / 86400), hr = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
@@ -500,7 +559,7 @@ function overview(el, ctx) {
       h('div', { class: 'cols sep' },
         h('div', {}, h('div', { class: 'stat-label' }, t('memory')), h('div', { class: 'mid num cy' }, unit(pctText(memP))),
           h('div', { class: 'small sub num', text: `${bytes(mem.used)} / ${bytes(mem.total)}` }), bar(memP, 'cy')),
-        h('div', {}, h('div', { class: 'stat-label' }, t('disk'), ' /'), h('div', { class: 'mid num ok' }, unit(pctText(diskP))),
+        h('div', {}, h('div', { class: 'stat-label' }, t('root_disk')), h('div', { class: 'mid num ok' }, unit(pctText(diskP))),
           h('div', { class: 'small sub num', text: `${bytes(disk.used)} / ${bytes(disk.total)}` }), bar(diskP))),
       h('hr', { class: 'divider' }),
       h('div', { class: 'kv-line' }, h('span', { text: 'Swap' }), h('b', { class: 'num', text: swap.total === 0 ? t('swap_off') : `${bytes(swap.used)} / ${bytes(swap.total)}` })));
@@ -522,9 +581,45 @@ function overview(el, ctx) {
         ? [h('div', { class: 'fav-list' }, list.map((n) => h('a', { class: 'chip', href: '#/services/' + enc(n), title: n }, icon('star'), n))),
           h('p', { class: 'note', text: t('favorites_note') })]
         : h('p', { class: 'note', text: t('favorites_empty') }));
+    const monitor = parseResourceMonitor(d, !stale);
+    const thresholdText = fin(monitor.threshold) ? `${monitor.threshold} %` : DASH;
+    const alertName = (item) => {
+      const res = item.resource || item.kind;
+      return res === 'cpu' ? 'CPU' : res === 'memory' ? t('memory') : res === 'disk' ? t('root_disk') : res;
+    };
+    const renderAlertList = (items) => h('div', { class: 'resource-alert-list' }, items.map((item) =>
+      h('div', { class: 'resource-alert-item' }, t('resource_alert_item', alertName(item), pctText(item.percent), thresholdText))));
+
+    let alertEl = null;
+    if (monitor.state === 'ok') {
+      if (monitor.alerts.length) {
+        alertEl = h('div', { class: 'resource-alert', role: 'alert', 'aria-live': 'polite' },
+          h('div', { class: 'resource-alert-title' }, icon('alert'), t('resource_alert_title')),
+          renderAlertList(monitor.alerts),
+          h('div', { class: 'resource-alert-note' }, t('resource_alert_note')));
+      }
+    } else if (monitor.state === 'warming_up') {
+      alertEl = h('div', { class: 'resource-alert warming', role: 'status', 'aria-live': 'polite' },
+        h('div', { class: 'resource-alert-title' }, icon('clock'), t('resource_monitor_warming_up')),
+        h('div', { class: 'resource-alert-note no-list' }, t('resource_monitor_warming_up_note', thresholdText)));
+    } else if (monitor.state === 'error') {
+      alertEl = h('div', { class: 'resource-alert danger', role: 'alert', 'aria-live': 'polite' },
+        h('div', { class: 'resource-alert-title' }, icon('alert'), t('resource_monitor_error')),
+        h('div', { class: 'resource-alert-note no-list' }, t('resource_monitor_error_note')));
+    } else if (monitor.state === 'expired') {
+      alertEl = h('div', { class: 'resource-alert warn', role: 'alert', 'aria-live': 'polite' },
+        h('div', { class: 'resource-alert-title' }, icon('alert'), t('resource_monitor_expired')),
+        monitor.alerts.length ? renderAlertList(monitor.alerts) : null,
+        h('div', { class: 'resource-alert-note' + (monitor.alerts.length ? '' : ' no-list') }, t('resource_monitor_expired_note')));
+    } else if (monitor.state === 'missing') {
+      alertEl = h('div', { class: 'resource-alert unavail', role: 'status', 'aria-live': 'polite' },
+        h('div', { class: 'resource-alert-title' }, icon('alert'), t('resource_monitor_unavailable')),
+        h('div', { class: 'resource-alert-note no-list' }, t('resource_monitor_missing_note')));
+    }
     fill(body,
       stale ? staleBanner(err) : null,
       h('div', { class: 'uptime' }, h('span', { class: 'stat-label' }, icon('clock'), t('uptime')), h('b', { class: 'num', text: duration(d.uptime_seconds) })),
+      alertEl,
       h('div', { class: 'grid2' + (stale ? ' stale' : '') }, resources, network),
       favorites,
       h('div', { class: 'statusline' },
@@ -1285,3 +1380,5 @@ route();
 if (S.token && parseHash().page !== 'overview') {
   api('GET', 'system').then((d) => { if (validSystem(d)) setSys(d); }).catch(() => {});
 }
+
+export { parseResourceMonitor, evaluateResourceAlerts };

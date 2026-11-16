@@ -18,14 +18,16 @@ Android App ─┐
 
 ## 快速部署
 
-适用于运行 systemd 的 Linux，支持 amd64、arm64、ARMv7。服务器需要 `curl`、`sha256sum`，无需安装 Go。
+默认安装模式适用于运行 systemd 的 Linux，支持 amd64、arm64、ARMv7。服务器需要 `curl`、`sha256sum`，无需安装 Go。群晖 DSM、飞牛 fnOS 或其他定制 Linux 请先看下方 [NAS 与非 systemd 部署](#nas-与非-systemd-部署)，不要仅凭品牌判断是否能安装系统服务。
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/chilin11/litehelm/main/install.sh -o litehelm-install.sh
 sudo sh litehelm-install.sh
 ```
 
-脚本从最新 Release 下载对应架构程序并校验 SHA-256，安装 systemd 服务，首次生成随机令牌；重复执行可更新，保留已有令牌、unit 与 drop-in。启动失败会尝试恢复旧程序与原运行状态。不会更改防火墙、安装其他软件或配置反向代理。
+脚本从最新 Release 下载对应架构程序并校验 SHA-256，安装 systemd 服务，首次生成随机令牌；重复执行可更新到该 Release，保留已有令牌、unit 与 drop-in。启动失败会尝试恢复旧程序与原运行状态。不会更改防火墙、安装其他软件或配置反向代理。
+
+**注意版本**：下载 main 上的安装脚本不等于安装 main 的服务端，脚本默认仍下载 `releases/latest`。仅推送 main 不会生成新版 Release；发布工作流由 `v*` 标签触发且需要成功发布。没有包含目标代码的 Release 时，使用下方[从源码构建和升级](#从源码构建和升级)，不能依靠 latest 获取新版。
 
 查看服务和连接令牌：
 
@@ -45,6 +47,62 @@ sudo sh litehelm-install.sh --local-dir ./downloads
 ```
 
 程序位于 `/usr/local/bin/litehelm`，令牌位于 `/etc/litehelm/token`（0600），服务配置为 `/etc/systemd/system/litehelm.service`。Release 的校验清单用于验证下载完整性；脚本与程序来源均为本仓库的 HTTPS 发布地址。
+
+## NAS 与非 systemd 部署
+
+**支持边界：以下是基于代码与本地安装器夹具的兼容路径，不是 NAS 实机认证。DSM 6.x / 7.x、飞牛 fnOS 的具体发行版本、机型、CPU 与固件组合均未经实机验证。** 不安装 SPK/fpk、不接管厂商启动系统，也不自动修改 NAS 用户、系统分区、防火墙或反向代理。
+
+| 环境 | 建议部署路径 | 不作保证的部分 |
+| --- | --- | --- |
+| 群晖 DSM，尤其没有可用 systemd 管理器时 | 普通本机账号的私有目录 + `--manual-dir`，先前台运行 | DSM 套件服务、任务计划、存储池、系统关机流程不由 LiteHelm 适配；不能把 `synoservice` 等同于 systemd |
+| 飞牛 fnOS，实际运行 systemd 时 | 确认管理器可达与安装权限后可用默认安装；不想更改系统时仍可手动部署 | 不按发行版名称假定 systemd 版本、沙箱、命令选项与普通 Debian 完全相同；固件升级后的持久性需自行验证 |
+| 其他非 systemd Linux，或 systemd 工具/权限不完整 | `--manual-dir` + 自己已有的前台监管器 | 不提供 OpenRC、procd 或厂商 init 的服务管理适配 |
+
+先用只读命令确认实际环境（不存在的命令可以跳过；不要为此更换 NAS 的 init）：
+
+```sh
+uname -srm
+cat /proc/1/comm
+command -v systemctl
+# 仅在 systemctl 存在时：确认能与管理器通信，而不只是安装了命令
+systemctl show --property=Version
+```
+
+Release 架构按 `uname -m` 选择：`x86_64` → `amd64`、`aarch64` / `arm64` → `arm64`、`armv7l` / `armv8l` → `armv7`（需要 ARMv7 指令支持）。没有 i686、ARMv5、ARMv6 等旧 NAS 的预编译包；ARM64 CPU 搭配 32 位用户空间的组合也未验证。Go 静态程序不依赖 NAS 的 glibc 版本，但仍受 Linux 内核、CPU 指令和挂载执行权限约束，不能靠换 libc 绕过这些要求。
+
+### 无需 root 的手动部署
+
+使用**普通本机账号**，选择真正的本地、可执行、仅自己可访问的目录；不需要 NAS 的管理员组或 root。`--manual-dir` 与 `--version` / `--local-dir` 可组合，但不能搭配系统模式的 exec/web 配置选项：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/chilin11/litehelm/main/install.sh -o litehelm-install.sh
+# DSM 的 HOME 可能经过 /var/services 等符号链接，先取得真实路径
+nas_home=$(CDPATH='' cd -- "$HOME" && pwd -P)
+manual_dir="$nas_home/.local/share/litehelm"
+sh litehelm-install.sh --manual-dir "$manual_dir"
+# 离线时改用：sh litehelm-install.sh --manual-dir "$manual_dir" --local-dir ./downloads
+cd "$manual_dir"
+GOMEMLIMIT=32MiB GOGC=75 ./litehelm -token-file ./token
+```
+
+此模式只在目标目录放置 `litehelm` 与首次生成的 `token`，校验 SHA-256 并在目标文件系统执行 `-h` 检查；不调用 systemctl、不创建账号、不注册自启、不重启已有进程。目录须由当前账号拥有且没有组/其他人权限（通常 0700），已有 token 须由当前账号拥有且为 0600；不符合时拒绝而非替你改权限。路径各段及目标文件不能是符号链接。需要 Linux 的 GNU/BusyBox `stat -c`、标准 Shell 工具及支持 Unix 权限/硬链接的本地文件系统。新目录按 0700 创建；NAS 的共享权限/ACL 仍应自行确认，**不要放在多人可写或可浏览的共享文件夹中**。
+
+程序仍只监听 `127.0.0.1:9091`，本机读取 `token` 后，使用 NAS 上已有的 HTTPS 反向代理访问；代理应保留 `Host`、转发 `Authorization`。不能直接改成 `0.0.0.0` 对公网开放；另一容器或另一机器上的代理也不能直接访问该 loopback，应由用户设计安全的本机转发，勿为此开放特权容器或 Docker socket。令牌不要粘贴到工单或公开日志。
+
+前台运行可用 Ctrl+C / SIGTERM 停止。需要自启与崩溃拉起时，由用户在 NAS **已有**的监管器中配置绝对路径启动命令、运行账号、日志轮转及停止策略，并确保数据卷已挂载；DSM 的“开机任务”不等于持续监管，具体固件可能回收任务子进程，未验证前不要假定能常驻。不建议修改 `/etc/rc*`、厂商套件文件或手工用 PID 文件自动 kill。手动模式不具备默认 systemd unit 的沙箱，切勿为了功能完整直接改成 root 常驻。
+
+升级时重跑同一 `--manual-dir` 命令：保留 token，校验成功后原子替换二进制，不自动停止或重启正在运行的旧程序。先自行备份旧二进制，升级后通过原监管器停止/启动；启动失败时由用户还原备份，不承诺手动模式自动回滚。卸载时先停监管器/进程、移除自启配置，再仅删除自己的部署目录；不要执行下方 systemd 卸载命令。
+
+### NAS 上各功能的实际条件
+
+- **资源/进程查看**：依赖可读的 `/proc` 和本地文件系统信息。普通账号受 NAS ACL、`hidepid`、容器命名空间限制，可能只看到部分进程/归属。概览容量是根分区，不是 NAS 存储池容量；挂载点页不等于 RAID/SMART/配额管理。
+- **结束进程**：安全发信号需要可用的 pidfd（上游 Linux 5.3+，厂商回移/过滤可能不同）及相应权限；缺少时拒绝，不退回有 PID 复用风险的 kill。当前能力字段主要反映 root 身份，不代表内核功能已探测成功；NAS 管理员组也不等于 root。不要为结束厂商守护进程提升权限，可能影响网络、存储与远程访问。
+- **服务、服务日志、定时任务**：只适配 systemd units / journal / timers，分别需要可达管理器和 `systemctl` / `journalctl`。无 systemd 时列表报告不支持；不是 DSM 套件、飞牛应用、容器或 NAS 图形界面任务计划的管理接口。非 root 通常无权启停服务，日志也可能受限。
+- **磁盘/目录扫描**：仅已知本地文件系统，远程/FUSE 挂载跳过；缺少 `/proc/self/fdinfo` 的挂载标识时也可能跳过。安全扫描需要可用的 openat2（上游 Linux 5.6+），路径中有符号链接或沙箱屏蔽调用时拒绝；不会为兼容旧内核关闭这些安全校验。NAS 的共享目录常是链接或受 ACL 限制，需使用明确授权的真实路径。
+- **脚本**：仍默认关闭。普通账号手动运行时可显式加 `-allow-exec -jobs-dir /absolute/private/jobs`，任务以同一账号作为子进程组运行；目录须符合现有的 ASCII 绝对路径限制，服务重启不保证任务存活。不提供非 systemd 下从 root 安全切换执行账号的实现；不要用 `-exec-user root` 规避限制。systemd 临时任务还依赖 `systemd-run` 及其属性支持，旧发行版/厂商变体不保证可用。
+- **重启/关机**：默认关闭；依赖 root、systemd、`systemd-run`，未适配厂商关机/存储卸载流程，NAS 上建议保持关闭并使用厂商控制台。
+
+可复现的最小本地验证：`sh scripts/test-install.sh --manual-only`，只用临时目录和 Shell 假二进制验证手动安装、重装保留 token、校验失败不替换、拒绝符号链接及不调用系统安装命令；**不验证真实 Release 在 NAS 上可执行，也不进行真实系统安装**。默认不带该选项的安装测试仍仅限一次性 systemd CI 主机。
 
 ## 可以做什么
 
@@ -126,11 +184,11 @@ sudo sh install.sh --disable-exec         # 关闭（保留 litehelm 用户）
 
 ## 资源与权限
 
-早期 ARM64 模拟器 Linux 内核参考：空闲 RSS 约 **5.6 MiB**，连续请求后约 **10.5 MiB**；状态请求约 **151 ms**（包含 150 ms CPU 采样等待），进程列表约 **11 ms**。这些不是目标服务器性能保证，进程数量、内核和硬件都会影响结果。没有常驻历史采集和持久化指标库。
+早期 ARM64 模拟器 Linux 内核参考：空闲 RSS 约 **5.6 MiB**，连续请求后约 **10.5 MiB**；这些是旧版本数据，不代表当前后台监控版本的性能。当前服务端约每 5 秒采样资源并计算告警，不保存历史数据或持久化指标库；实际开销取决于服务器环境。
 
 为了管理其他用户的进程和系统服务，安装器创建受 systemd 沙箱与 capabilities 限制的 root 服务。令牌代表主机管理权限，请仅保存在自己的设备中。Android 使用 Keystore + AES-GCM 加密本地配置，禁用备份。
 
-多服务器配置和收藏保存在手机加密存储，旧版本的单连接自动迁移。只刷新当前主机，切换后清空旧主机状态和速率；不查询其他保存的主机。工具页手动刷新，首页每 5 秒刷新不会加载服务、端口、任务或目录扫描。使用新工具需同步更新服务端。
+多服务器配置和收藏保存在手机加密存储，旧版本的单连接自动迁移。只刷新当前主机，切换后清空旧主机状态和速率；不查询其他保存的主机。Android 概览仅在前台约每 10 秒刷新，不在后台采样或轮询；工具页手动刷新。资源告警由服务端计算，使用该功能需同步升级服务端。
 
 ## 按需诊断的限制
 
@@ -153,36 +211,60 @@ Environment="LITEHELM_SCAN_ROOTS=/var/log,/var/cache"
 安装器添加 `10-litehelm-openat2.conf`，设置 `RestrictSUIDSGID=false`：部分 systemd 版本在该项开启时屏蔽 openat2。原 unit 和用户 drop-in 保留；只读系统、NoNewPrivileges 与 capabilities 限制继续启用。若后续自定义配置再次屏蔽 openat2，扫描会拒绝执行。
 
 
-## 从源码构建
+## 从源码构建和升级
 
-服务端需要 Go 1.24+：
+以下命令从**包含目标改动的同一源码树根目录**运行。服务端构建需要 Go 1.24+、Python 3 和构建依赖；构建机会输出 Linux amd64、arm64、armv7 三个程序，不需要在 NAS 上安装 Go：
 
 ```sh
-cd server
-go test ./...
-go vet ./...
-cd ..
+# 可选：记录当前源码版本和未提交变更，确认确实包含要部署的代码
+git rev-parse HEAD
+git status --short
 sh scripts/build-server.sh
 python3 scripts/checksums.py
-sudo sh deploy/install.sh
 ```
 
-非 systemd 主机可手动启动状态/进程功能：
+产物在 `dist/litehelm-linux-{amd64,arm64,armv7}` 和 `dist/SHA256SUMS`；脚本默认以 Git 描述（含 dirty 标记）写入版本，也可在构建时设置不含空格的 `VERSION`。构建机与目标机不同时，通过可信渠道传送对应架构程序、清单和**同一源码树的** `install.sh`；`SHA256SUMS` 只能检查完整性，不能在程序与清单都被替换时证明来源。确保目标机有 `sha256sum`，核实 CPU 架构与文件来源。源码树内的 `deploy/install.sh` 是固定使用本树 `dist` 的便捷包装；下面的命令均在目标机的源码树根目录执行，或在只传送产物时改为 `sh install.sh --local-dir /实际产物目录` 并保留对应模式参数。
+
+### systemd 首装或升级
+
+升级前安排维护窗口，检查现有 unit、drop-in、代理与运行状态；将 `/usr/local/bin/litehelm`、`/etc/litehelm/`、`/etc/systemd/system/litehelm.service` 及其 drop-in、`/var/lib/litehelm/`（如存在）安全备份到仅授权人员可读的位置。令牌和任务记录可能包含敏感信息，不要公开。首次安装没有旧文件时跳过备份。确认目标上 systemd 管理器可达，再执行：
 
 ```sh
-umask 077
-./dist/litehelm-linux-arm64 -generate-token > token
-GOMEMLIMIT=32MiB GOGC=75 ./dist/litehelm-linux-arm64 -token-file ./token
+systemctl show --property=Version
+sudo sh deploy/install.sh
+sudo systemctl status litehelm --no-pager
+/usr/local/bin/litehelm -version
 ```
+
+该包装使用 `--local-dir dist`，不是下载 latest；安装器校验并试运行程序，保留既有 token、unit 和用户 drop-in，重启并启用服务，启动失败时尝试恢复旧程序与原状态，但不代替备份。检查日志 `sudo journalctl -u litehelm -n 40 --no-pager`，确认原 HTTPS 地址及带令牌的访问正常；检查版本时同时核对构建记录，dirty 版本不唯一。恢复时按现场备份与原配置操作，避免覆盖令牌。
+
+### NAS / 非 systemd 手动首装或升级
+
+按上方 NAS 章节选择普通账号、真实的私有可执行目录，预先确认权限和监管方式；首次没有目录时安装器创建。升级前安全备份该目录中的旧 `litehelm` 和 `token`，以及运行参数、监管配置和任务数据（如有）；令牌须保持私密。以下仍从目标机上包含 `dist` 的源码树根目录执行：
+
+```sh
+nas_home=$(CDPATH='' cd -- "$HOME" && pwd -P)
+manual_dir="$nas_home/.local/share/litehelm"
+sh deploy/install.sh --manual-dir "$manual_dir"
+# 首次前台启动；已有监管器时通过原监管器停止并启动，不要额外启动第二份
+cd "$manual_dir"
+GOMEMLIMIT=32MiB GOGC=75 ./litehelm -token-file ./token
+```
+
+手动模式保留 token、替换磁盘上的程序，但**不会重启正在运行的旧进程，也不会自动回滚**；升级后由原监管器停止旧进程并启动新程序，确认服务和 HTTPS 访问正常，失败时停止后从安全备份还原旧程序。仅以普通账号前台部署时按 Ctrl+C 停止旧进程，再启动新程序。安装器不替用户配置监管器或反向代理。所有模式均只监听本机 loopback；远程访问需要可信 HTTPS 反向代理转发 `Authorization`，App 校验证书且不支持跳过证书错误，令牌切勿放进公开日志。
+
+### Android 构建与安装
 
 Android 需要 JDK 17 和 Android SDK 35：
 
 ```sh
 cd android
-./gradlew assembleDebug lintDebug
+./gradlew assembleDebug
 ```
 
-测试 APK 使用开发签名；持续分发需要稳定的签名密钥。发布工作流可读取仓库签名 Secrets，否则明确提供测试 APK。服务端测试只结束自己启动的临时进程，不执行主机重启。
+仓库中的 [Debug APK](documents/LiteHelm-debug.apk) 是测试构建，包名 `com.litehelm.mobile`，最低 Android 8.0（API 26）。传到设备后从可信文件管理器打开，并按系统提示允许该来源安装；不自动安装或卸载。其 Debug 签名与正式 Release 固定签名不同，**不能覆盖安装正式版**；卸载正式版会删除应用数据（包括加密的主机配置），无法保证保留。只有签名一致、版本号等安装条件满足的构建才能覆盖升级；请事先安全保存服务器地址和令牌，勿公开分享。Debug APK 可调试，不应作为正式生产发布包。
+
+发布工作流需要配置稳定签名 Secrets，并核验固定证书；缺少签名配置会失败，不会自动提供正式签名 APK。
 
 ## 卸载
 

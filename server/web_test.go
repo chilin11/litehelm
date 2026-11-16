@@ -115,3 +115,94 @@ func TestBrowserOriginRules(t *testing.T) {
 		}
 	}
 }
+
+func TestWebResourceAlertAssets(t *testing.T) {
+	a := testApp()
+	a.web = true
+
+	// Verify i18n strings for all 3 languages
+	i18n := webRequest(a, "GET", "/i18n.js", nil)
+	if i18n.Code != 200 {
+		t.Fatalf("/i18n.js: %d", i18n.Code)
+	}
+	i18nBody := i18n.Body.String()
+	for _, expected := range []string{
+		// English
+		"High resource usage",
+		"Root partition (/)",
+		"{0} {1} · threshold {2}",
+		"Based on current refresh (not a background push)",
+		"Resource monitor warming up",
+		"Resource monitor error",
+		"Resource monitor data stale",
+		"Resource monitor unavailable",
+		// Simplified Chinese
+		"资源占用过高",
+		"根分区 (/)",
+		"{0} {1} · 阈值 {2}",
+		"基于当前刷新采样（非后台推送）；占用回落到阈值以下后自动消失。",
+		"资源监控正在预热",
+		"资源监控异常",
+		"资源监控数据已过期",
+		"资源监控不可用",
+		// Traditional Chinese
+		"資源佔用過高",
+		"根分割區 (/)",
+		"{0} {1} · 閾值 {2}",
+		"依據目前重新整理取樣（非背景推播）；佔用回落至閾值以下後自動消失。",
+		"資源監控正在預熱",
+		"資源監控異常",
+		"資源監控資料已過期",
+		"資源監控不可用",
+	} {
+		if !strings.Contains(i18nBody, expected) {
+			t.Fatalf("i18n.js missing string: %q", expected)
+		}
+	}
+
+	// Verify app.js consumes server resource_monitor and does not compute threshold on client
+	app := webRequest(a, "GET", "/app.js", nil)
+	if app.Code != 200 {
+		t.Fatalf("/app.js: %d", app.Code)
+	}
+	appBody := app.Body.String()
+	if strings.Contains(appBody, "RESOURCE_ALERT_THRESHOLD = 85") {
+		t.Fatal("app.js must not calculate threshold on client")
+	}
+	for _, expected := range []string{
+		"resource_monitor",
+		"parseResourceMonitor",
+		"evaluateResourceAlerts",
+		"warming_up",
+		"resource-alert",
+		"resource-alert-title",
+		"resource-alert-list",
+		"resource-alert-item",
+		"resource-alert-note",
+	} {
+		if !strings.Contains(appBody, expected) {
+			t.Fatalf("app.js missing %q", expected)
+		}
+	}
+
+	// Verify app.css contains styles for resource-alert and status variants
+	css := webRequest(a, "GET", "/app.css", nil)
+	if css.Code != 200 {
+		t.Fatalf("/app.css: %d", css.Code)
+	}
+	cssBody := css.Body.String()
+	for _, expected := range []string{
+		".resource-alert",
+		".resource-alert-title",
+		".resource-alert-list",
+		".resource-alert-item",
+		".resource-alert-note",
+		".resource-alert.danger",
+		".resource-alert.unavail",
+		".resource-alert.warming",
+	} {
+		if !strings.Contains(cssBody, expected) {
+			t.Fatalf("app.css missing %q", expected)
+		}
+	}
+}
