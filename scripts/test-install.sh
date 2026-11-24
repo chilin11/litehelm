@@ -45,12 +45,27 @@ FIXTURE
  [ "$token_hash" = "$(sha256sum "$manual/token")" ]
  (cd "$tmp/assets" && sha256sum "$asset" > SHA256SUMS)
  if sh "$base/install.sh" --local-dir "$tmp/assets" --manual-dir "$manual" --enable-exec > "$tmp/install.log" 2>&1; then echo 'Accepted system configuration in manual mode'; exit 1; fi
+ reject_manual_listen() {
+  if sh "$base/install.sh" --manual-dir "$manual" "$@" > "$tmp/install.log" 2>&1; then echo 'Accepted managed listener in manual mode'; exit 1; fi
+  grep -q 'pass listen flags directly' "$tmp/install.log"
+ }
+ reject_manual_listen --listen-lan 192.168.1.201:9091
+ reject_manual_listen --allow-cidrs 192.168.1.10
+ reject_manual_listen --listen-loopback
+ # Invalid unit syntax must fail before reaching even the stubbed system manager.
+ for bad in '192.168.1.1:80 -allow-power' '192.168.1.1:80%n' '192.168.1.1:80
+ExecStart=/bin/false'; do
+  if sh "$base/install.sh" --listen-lan "$bad" > "$tmp/install.log" 2>&1; then exit 1; fi
+  grep -q 'Invalid characters in --listen-lan' "$tmp/install.log"
+ done
+ if sh "$base/install.sh" --listen-lan '[fd00::1]:80' --allow-cidrs '10.0.0.1;id' > "$tmp/install.log" 2>&1; then exit 1; fi
+ grep -q 'Invalid characters in --allow-cidrs' "$tmp/install.log"
  mkdir -m 700 "$tmp/linked"
  ln -s "$manual/token" "$tmp/linked/token"
  if sh "$base/install.sh" --local-dir "$tmp/assets" --manual-dir "$tmp/linked" > "$tmp/install.log" 2>&1; then echo 'Accepted manual token symlink'; exit 1; fi
  [ "$token_hash" = "$(sha256sum "$manual/token")" ]
  [ ! -e "$manual/.install.lock" ]
- printf '%s\n' 'Manual installer fixtures (not a real NAS/binary): private path, checksum, token preservation, symlink rejection, no managed system commands: PASS'
+ printf '%s\n' 'Manual installer fixtures (not a real NAS/binary): private path, checksum, token preservation, symlink rejection, listen flag isolation/injection rejection, no managed system commands: PASS'
  exit 0
 fi
 [ "${LITEHELM_TEST_DISPOSABLE:-}" = 1 ] || { echo 'Set LITEHELM_TEST_DISPOSABLE=1 only on a disposable runner (or use --manual-only)'; exit 1; }
@@ -273,6 +288,49 @@ sh "$base/install.sh" --local-dir "$base/dist"
 sh "$base/install.sh" --local-dir "$base/dist" --enable-web
 [ ! -e /etc/systemd/system/litehelm.service.d/30-litehelm-web.conf ]
 [ "$(http_code /)" = 200 ]
+# Use a loopback IP so the disposable runner needs no routable LAN interface.
+listen_conf=/etc/systemd/system/litehelm.service.d/40-litehelm-listen.conf
+override=${listen_conf%/*}/override.conf
+[ ! -e "$override" ] || { echo 'Refusing to overwrite a pre-existing fixture override'; exit 1; }
+# Same address, missing CIDRs. Deliberately do not reload: preflight must inspect disk.
+printf '%s\n' '[Service]' 'ExecStart=' 'ExecStart=/usr/local/bin/litehelm -token-file /etc/litehelm/token -allow-private-listen -listen 127.0.0.1:9091' > "$override"
+original_pid=$(systemctl show -p MainPID litehelm.service)
+if sh "$base/install.sh" --local-dir "$base/dist" --listen-lan 127.0.0.1:9091 --allow-cidrs 10.0.0.1 > "$tmp/conflict.log" 2>&1; then echo 'Accepted unmanaged override.conf'; exit 1; fi
+grep -q 'manually merge' "$tmp/conflict.log"
+[ ! -e "$listen_conf" ]
+[ "$original_pid" = "$(systemctl show -p MainPID litehelm.service)" ]
+# A drop-in arriving after preflight must also be caught, before restart.
+mv "$override" "$tmp/late-override.conf"
+mkdir "$tmp/late-bin"
+cat > "$tmp/late-bin/systemctl" <<'SH'
+#!/bin/sh
+if [ "$1" = daemon-reload ] && [ -f "$STAGED_OVERRIDE" ]; then mv "$STAGED_OVERRIDE" "$TARGET_OVERRIDE" || exit 1; fi
+exec "$REAL_SYSTEMCTL" "$@"
+SH
+chmod +x "$tmp/late-bin/systemctl"
+real_systemctl=$(command -v systemctl)
+if STAGED_OVERRIDE="$tmp/late-override.conf" TARGET_OVERRIDE="$override" REAL_SYSTEMCTL="$real_systemctl" PATH="$tmp/late-bin:$PATH" sh "$base/install.sh" --local-dir "$base/dist" --listen-lan 127.0.0.1:9091 --allow-cidrs 10.0.0.1 > "$tmp/conflict.log" 2>&1; then echo 'Accepted shadowed listener after reload'; exit 1; fi
+grep -q 'Effective ExecStart does not match' "$tmp/conflict.log"
+[ ! -e "$listen_conf" ]
+[ "$original_pid" = "$(systemctl show -p MainPID litehelm.service)" ]
+[ "$token_hash" = "$(sha256sum /etc/litehelm/token)" ]
+[ "$binary_hash" = "$(sha256sum /usr/local/bin/litehelm)" ]
+rm "$override"
+systemctl daemon-reload
+sh "$base/install.sh" --local-dir "$base/dist" --listen-lan 127.0.0.1:9091 --allow-cidrs 10.0.0.1
+grep -qx 'Wants=network-online.target' "$listen_conf"
+grep -qx 'After=network-online.target' "$listen_conf"
+[ "$(http_code /)" = 403 ]
+[ "$(http_code /api/v1/system auth)" = 403 ]
+listen_hash=$(sha256sum "$listen_conf")
+sh "$base/install.sh" --local-dir "$base/dist"
+[ "$listen_hash" = "$(sha256sum "$listen_conf")" ]
+if sh "$base/install.sh" --local-dir "$base/dist" --listen-lan '[::]:9091'; then echo 'Accepted wildcard'; exit 1; fi
+if sh "$base/install.sh" --local-dir "$base/dist" --listen-lan 127.0.0.1:9091 --allow-cidrs 0.0.0.0/0; then echo 'Accepted public CIDR'; exit 1; fi
+[ "$listen_hash" = "$(sha256sum "$listen_conf")" ]
+sh "$base/install.sh" --local-dir "$base/dist" --listen-lan 127.0.0.1:9091
+[ "$(http_code /)" = 200 ]
+listen_hash=$(sha256sum "$listen_conf")
 cp "$base/dist/litehelm-linux-amd64" "$tmp/litehelm-linux-amd64"
 printf '%064d  litehelm-linux-amd64\n' 0 > "$tmp/SHA256SUMS"
 if sh "$base/install.sh" --local-dir "$tmp"; then echo 'Accepted bad checksum'; exit 1; fi
@@ -283,7 +341,13 @@ if [ "${1:-}" = -h ]; then exit 0; fi
 exit 1
 BAD
 (cd "$tmp" && sha256sum litehelm-linux-amd64 > SHA256SUMS)
-if sh "$base/install.sh" --local-dir "$tmp"; then echo 'Accepted crashing binary'; exit 1; fi
+# Removing the managed override and replacing the binary must roll back together.
+if sh "$base/install.sh" --local-dir "$tmp" --listen-loopback; then echo 'Accepted crashing binary'; exit 1; fi
+[ "$listen_hash" = "$(sha256sum "$listen_conf")" ]
+[ "$(http_code /)" = 200 ]
+sh "$base/install.sh" --local-dir "$base/dist" --listen-loopback
+[ ! -e "$listen_conf" ]
+[ "$unit_hash" = "$(sha256sum /etc/systemd/system/litehelm.service)" ]
 [ "$binary_hash" = "$(sha256sum /usr/local/bin/litehelm)" ]
 cat > "$tmp/litehelm-linux-amd64" <<'NOEXECUSER'
 #!/bin/sh
@@ -291,6 +355,8 @@ if [ "${1:-}" = -h ]; then echo "Usage: litehelm [-allow-exec]"; exit 0; fi
 exit 0
 NOEXECUSER
 (cd "$tmp" && sha256sum litehelm-linux-amd64 > SHA256SUMS)
+if sh "$base/install.sh" --local-dir "$tmp" --listen-lan 127.0.0.1:9091; then echo 'Accepted old binary for LAN'; exit 1; fi
+[ ! -e "$listen_conf" ]
 if sh "$base/install.sh" --local-dir "$tmp" --enable-exec; then echo 'Accepted legacy binary as unprivileged script user'; exit 1; fi
 [ "$binary_hash" = "$(sha256sum /usr/local/bin/litehelm)" ]
 [ "$token_hash" = "$(sha256sum /etc/litehelm/token)" ]

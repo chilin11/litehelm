@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -45,13 +44,18 @@ type app struct {
 	jobs       *jobRunner
 	execReason string
 	// web serves the embedded browser UI on non-API paths of the same listener.
-	web bool
+	web   bool
+	peers peerRanges // nil for the default loopback-only listener
 	// monitor is initialized before serving; requests only read cached samples.
 	monitor *resourceMonitor
 }
 
 func main() {
-	listen := flag.String("listen", "127.0.0.1:9091", "HTTP listen address; loopback only")
+	listen := flag.String("listen", "127.0.0.1:9091", "HTTP listen IP:port; loopback only by default")
+	private := flag.Bool("allow-private-listen", os.Getenv("LITEHELM_ALLOW_PRIVATE_LISTEN") == "1", "also permit a specific RFC1918, ULA or CGNAT listen IP")
+	envCIDRs, cidrsSet := os.LookupEnv("LITEHELM_ALLOW_CIDRS")
+	cidrs := flag.String("allow-cidrs", envCIDRs, "restrict TCP peers to these comma-separated private IPs or CIDRs")
+	checkListen := flag.Bool("check-listen", false, "validate network flags and exit without binding or reading a token")
 	tokenFile := flag.String("token-file", "/etc/litehelm/token", "file containing a random bearer token (mode 0600)")
 	power := flag.Bool("allow-power", false, "enable reboot/poweroff (requires root and systemd)")
 	allowExec := flag.Bool("allow-exec", os.Getenv("LITEHELM_ALLOW_EXEC") == "1", "enable arbitrary script jobs (also LITEHELM_ALLOW_EXEC=1)")
@@ -73,9 +77,18 @@ func main() {
 		fmt.Println(hex.EncodeToString(b))
 		return
 	}
-	host, _, err := net.SplitHostPort(*listen)
-	if err != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
-		log.Fatal("listen must be a loopback IP, e.g. 127.0.0.1:9091; publish through an HTTPS reverse proxy")
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "allow-cidrs" {
+			cidrsSet = true
+		}
+	})
+	endpoint, peers, err := networkPolicy(*listen, *private, *cidrs, cidrsSet)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if *checkListen {
+		fmt.Println(endpoint)
+		return
 	}
 	st, err := os.Stat(*tokenFile)
 	if err != nil {
@@ -94,7 +107,7 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	a := &app{token: sha256.Sum256([]byte(token)), power: *power, slots: make(chan struct{}, 2), unit: os.Getenv("LITEHELM_UNIT"), web: *web, monitor: startResourceMonitor(ctx)}
+	a := &app{token: sha256.Sum256([]byte(token)), power: *power, slots: make(chan struct{}, 2), unit: os.Getenv("LITEHELM_UNIT"), web: *web, peers: peers, monitor: startResourceMonitor(ctx)}
 	defer func() {
 		stop()
 		<-a.monitor.done
@@ -110,7 +123,7 @@ func main() {
 			log.Printf("script jobs disabled: %v", err)
 		}
 	}
-	srv := &http.Server{Addr: *listen, Handler: a, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 25 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
+	srv := &http.Server{Addr: endpoint.String(), Handler: a, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 25 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
 	shutdownDone := make(chan struct{})
 	go func() {
 		<-ctx.Done()
@@ -123,7 +136,11 @@ func main() {
 	if a.jobs != nil {
 		execMode = a.jobs.mode() + " as " + a.jobs.user
 	}
-	log.Printf("LiteHelm listening on %s (power=%t exec=%s web=%t)", *listen, *power, execMode, *web)
+	scope := "loopback listener only"
+	if peers != nil {
+		scope = fmt.Sprint(peers)
+	}
+	log.Printf("LiteHelm listening on %s (TCP peers: %s; power=%t exec=%s web=%t)", endpoint, scope, *power, execMode, *web)
 	if e := srv.ListenAndServe(); e != nil && !errors.Is(e, http.ErrServerClosed) {
 		stop()
 		<-shutdownDone
@@ -144,7 +161,19 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 	// One listener, split by path: /api/ is the JSON protocol for the app and the
 	// web UI; everything else is the embedded static web UI (no data, no auth).
-	if p != "/api" && !strings.HasPrefix(p, "/api/") {
+	isAPI := p == "/api" || strings.HasPrefix(p, "/api/")
+	if a.peers != nil && !a.peers.accepts(r.RemoteAddr) {
+		w.Header().Set("Cache-Control", "no-store")
+		if isAPI {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			fail(w, http.StatusForbidden, "TCP peer not allowed")
+		} else {
+			http.Error(w, "TCP peer not allowed", http.StatusForbidden)
+		}
+		return
+	}
+	if !isAPI {
 		a.serveWeb(w, r)
 		return
 	}

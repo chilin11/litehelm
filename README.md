@@ -36,7 +36,25 @@ sudo systemctl status litehelm --no-pager
 sudo cat /etc/litehelm/token
 ```
 
-服务端监听 `127.0.0.1:9091`。把现有 HTTPS 反向代理的上游设为 `http://127.0.0.1:9091`，在 App 填写 `https://server.example.com` 和令牌。代理需转发 `Authorization`，管理域名不应额外跳转到网页登录。App 使用系统证书校验，不支持忽略证书错误。
+服务端默认仅监听 `127.0.0.1:9091`。把现有 HTTPS 反向代理的上游设为 `http://127.0.0.1:9091`，在 App 填写 `https://server.example.com` 和令牌。代理需转发 `Authorization`，管理域名不应额外跳转到网页登录。App 使用系统证书校验，不支持忽略证书错误。
+
+**另一台局域网设备上的代理 / Cloudflare Tunnel**：将 `192.168.1.201` 换成服务端自己的固定私网 IP，用包含此功能的服务端版本执行：
+
+```sh
+sudo sh litehelm-install.sh --listen-lan 192.168.1.201:9091
+```
+
+将代理上游设为 `http://192.168.1.201:9091`；局域网设备均可连接，无需逐台配置 IP。
+
+**撤销局域网监听**时才执行，恢复标准安装的回环地址：
+
+```sh
+sudo sh litehelm-install.sh --listen-loopback
+```
+
+仅可绑定具体的回环、RFC1918、IPv6 ULA 或 CGNAT 地址，不允许 `0.0.0.0`、`::`、公网 IPv6、链路本地或域名。IPv6 地址带端口时用方括号。默认接受上述私网范围内的所有 TCP 对端；如果以后要进一步收窄，可在 `--listen-lan` 后加 `--allow-cidrs 192.168.1.10,192.168.2.0/24`，仅放行列表，不信任代理转发的客户端 IP。**HTTP 上游会以明文传输令牌**，只在可信、隔离的链路使用；终端使用 HTTPS。有不可信设备时，优先在 LiteHelm 本机运行代理或使用加密隧道。
+
+不传监听选项的升级保留原设置。配置监听时，安装器只管理 `40-litehelm-listen.conf`；遇到自定义 `ExecStart` 会在更改前停止。请用 `systemctl cat litehelm.service` 查看现有命令，手动合并监听参数，并保留原有的 `-token-file`、`-allow-power` 等选项。
 
 指定版本或离线安装：
 
@@ -87,7 +105,7 @@ GOMEMLIMIT=32MiB GOGC=75 ./litehelm -token-file ./token
 
 此模式只在目标目录放置 `litehelm` 与首次生成的 `token`，校验 SHA-256 并在目标文件系统执行 `-h` 检查；不调用 systemctl、不创建账号、不注册自启、不重启已有进程。目录须由当前账号拥有且没有组/其他人权限（通常 0700），已有 token 须由当前账号拥有且为 0600；不符合时拒绝而非替你改权限。路径各段及目标文件不能是符号链接。需要 Linux 的 GNU/BusyBox `stat -c`、标准 Shell 工具及支持 Unix 权限/硬链接的本地文件系统。新目录按 0700 创建；NAS 的共享权限/ACL 仍应自行确认，**不要放在多人可写或可浏览的共享文件夹中**。
 
-程序仍只监听 `127.0.0.1:9091`，本机读取 `token` 后，使用 NAS 上已有的 HTTPS 反向代理访问；代理应保留 `Host`、转发 `Authorization`。不能直接改成 `0.0.0.0` 对公网开放；另一容器或另一机器上的代理也不能直接访问该 loopback，应由用户设计安全的本机转发，勿为此开放特权容器或 Docker socket。令牌不要粘贴到工单或公开日志。
+上述手动命令默认仅监听 `127.0.0.1:9091`。本机代理应保留 `Host`、转发 `Authorization`。如果代理在另一台设备，**在启动二进制时**加 `-allow-private-listen -listen 192.168.1.201:9091` 即可允许局域网访问，不要把 `--listen-lan` 传给 `--manual-dir` 安装器。可选 `-allow-cidrs` 接受逗号分隔的私网 IP 或 CIDR；对应环境变量为 `LITEHELM_ALLOW_PRIVATE_LISTEN=1`、`LITEHELM_ALLOW_CIDRS`。不要为此开放特权容器或 Docker socket。令牌不要粘贴到工单或公开日志。
 
 前台运行可用 Ctrl+C / SIGTERM 停止。需要自启与崩溃拉起时，由用户在 NAS **已有**的监管器中配置绝对路径启动命令、运行账号、日志轮转及停止策略，并确保数据卷已挂载；DSM 的“开机任务”不等于持续监管，具体固件可能回收任务子进程，未验证前不要假定能常驻。不建议修改 `/etc/rc*`、厂商套件文件或手工用 PID 文件自动 kill。手动模式不具备默认 systemd unit 的沙箱，切勿为了功能完整直接改成 root 常驻。
 
@@ -251,7 +269,7 @@ cd "$manual_dir"
 GOMEMLIMIT=32MiB GOGC=75 ./litehelm -token-file ./token
 ```
 
-手动模式保留 token、替换磁盘上的程序，但**不会重启正在运行的旧进程，也不会自动回滚**；升级后由原监管器停止旧进程并启动新程序，确认服务和 HTTPS 访问正常，失败时停止后从安全备份还原旧程序。仅以普通账号前台部署时按 Ctrl+C 停止旧进程，再启动新程序。安装器不替用户配置监管器或反向代理。所有模式均只监听本机 loopback；远程访问需要可信 HTTPS 反向代理转发 `Authorization`，App 校验证书且不支持跳过证书错误，令牌切勿放进公开日志。
+手动模式保留 token、替换磁盘上的程序，但**不会重启正在运行的旧进程，也不会自动回滚**；升级后由原监管器停止旧进程并启动新程序，确认服务和 HTTPS 访问正常，失败时停止后从安全备份还原旧程序。仅以普通账号前台部署时按 Ctrl+C 停止旧进程，再启动新程序。安装器不替用户配置监管器或反向代理。所有模式默认只监听本机 loopback；远程访问需要可信 HTTPS 反向代理转发 `Authorization`，App 校验证书且不支持跳过证书错误，令牌切勿放进公开日志。
 
 ### Android 构建与安装
 

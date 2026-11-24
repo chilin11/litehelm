@@ -8,6 +8,9 @@ MANUAL_DIR=
 EXEC=keep
 EXEC_USER=
 WEB=keep
+LISTEN_MODE=keep
+LAN_ADDR=
+CIDRS=
 usage() {
  cat <<'HELP'
 LiteHelm · 轻舵
@@ -21,6 +24,9 @@ Usage: sudo sh install.sh [--version vX.Y.Z] [--local-dir DIRECTORY] [--enable-e
   --disable-exec  Remove script execution again (the litehelm user is kept)
   --disable-web   Stop serving the built-in web UI (API for the app is unaffected)
   --enable-web    Serve the built-in web UI again (default)
+  --listen-lan IP:PORT  Listen on one specific private address (all private peers allowed by default)
+  --allow-cidrs LIST    Optional with --listen-lan: restrict peers to comma-separated private IPs/CIDRs
+  --listen-loopback     Remove the managed LAN override and restore the original unit (default 127.0.0.1:9091)
   --help          Show help without changing anything
 Existing token, service unit and drop-ins are preserved; script execution, script user and web UI are unchanged unless requested.
 Manual mode preserves its own token and never modifies an existing system installation. Configure runtime flags when starting it.
@@ -32,6 +38,15 @@ while [ "$#" -gt 0 ]; do
    if [ "$#" -lt 2 ] || [ -z "$2" ]; then usage; exit 1; fi
    opt=$1; shift
    case "$opt" in --version) VERSION=$1;; --local-dir) LOCAL_DIR=$1;; --manual-dir) MANUAL_DIR=$1;; esac;;
+  --listen-lan|--listen-loopback)
+   [ "$LISTEN_MODE" = keep ] || { echo 'Choose one listen mode' >&2; exit 1; }
+   if [ "$1" = --listen-lan ]; then
+    if [ "$#" -lt 2 ] || [ -z "$2" ]; then usage; exit 1; fi
+    shift; LAN_ADDR=$1; LISTEN_MODE=lan
+   else LISTEN_MODE=loopback; fi;;
+  --allow-cidrs)
+   if [ "$#" -lt 2 ] || [ -z "$2" ]; then usage; exit 1; fi
+   shift; CIDRS=$1;;
   --enable-exec) EXEC=on;;
   --exec-user) [ "$#" -ge 2 ] || { usage; exit 1; }; shift; EXEC_USER=$1;;
   --disable-exec) EXEC=off;;
@@ -42,6 +57,13 @@ while [ "$#" -gt 0 ]; do
  esac
  shift
 done
+if [ -n "$MANUAL_DIR" ] && { [ "$LISTEN_MODE" != keep ] || [ -n "$CIDRS" ]; }; then
+ echo '--manual-dir: pass listen flags directly to the binary at startup instead' >&2; exit 1
+fi
+if [ -n "$CIDRS" ] && [ "$LISTEN_MODE" != lan ]; then echo '--allow-cidrs requires --listen-lan' >&2; exit 1; fi
+# Restrict values interpolated in ExecStart to literal ASCII IP syntax, including IPv6 brackets.
+case "$LAN_ADDR" in *[!][0123456789abcdefABCDEF:.]*) echo 'Invalid characters in --listen-lan' >&2; exit 1;; esac
+case "$CIDRS" in *[!0123456789abcdefABCDEF:.,/]*) echo 'Invalid characters in --allow-cidrs' >&2; exit 1;; esac
 case "$VERSION" in latest|v[0-9]*) ;; *) echo 'Invalid version' >&2; exit 1;; esac
 if [ -n "$EXEC_USER" ]; then
  case "$EXEC_USER" in [a-z_]*) ;; *) echo 'Invalid --exec-user' >&2; exit 1;; esac
@@ -129,7 +151,7 @@ actual=$(sha256sum "$tmp/$asset"); actual=${actual%% *}
 [ "$actual" = "$expected" ] || { echo 'SHA256 mismatch; installed version left untouched' >&2; exit 1; }
 chmod 755 "$tmp/$asset"
 # Smoke-test architecture before replacing anything.
-"$tmp/$asset" -h >/dev/null 2>&1 || { echo 'Binary cannot run on this host/filesystem; check CPU architecture, kernel and noexec mount options' >&2; exit 1; }
+"$tmp/$asset" -h > "$tmp/help" 2>&1 || { echo 'Binary cannot run on this host/filesystem; check CPU architecture, kernel and noexec mount options' >&2; exit 1; }
 if [ -n "$MANUAL_DIR" ]; then
  if [ ! -e "$MANUAL_DIR/token" ]; then
   "$tmp/$asset" -generate-token > "$tmp/token"
@@ -142,6 +164,67 @@ if [ -n "$MANUAL_DIR" ]; then
  printf 'Manual deployment ready in %s\n' "$MANUAL_DIR"
  printf '%s\n' 'From that directory run: GOMEMLIMIT=32MiB GOGC=75 ./litehelm -token-file ./token' 'No service was installed or restarted. Token preserved; configure your own foreground supervisor and HTTPS reverse proxy.' 'This mode does not inherit the systemd sandbox. Prefer an unprivileged NAS account; scripts and power control are off by default.'
  exit 0
+fi
+listen_conf=/etc/systemd/system/litehelm.service.d/40-litehelm-listen.conf
+standard_start='/usr/local/bin/litehelm -listen 127.0.0.1:9091 -token-file /etc/litehelm/token'
+# Inspect disk, not just the manager cache: a new override may not have been reloaded yet.
+check_listen_ownership() {
+ systemd-analyze --system unit-paths > "$tmp/unit-paths" || return 1
+ [ -s "$tmp/unit-paths" ] || return 1
+ while IFS= read -r dir; do
+  for file in "$dir/litehelm.service" "$dir/litehelm.service.d/"*.conf "$dir/service.d/"*.conf; do
+   if [ ! -e "$file" ] && [ ! -L "$file" ]; then continue; fi
+   case "$file" in
+    */litehelm.service)
+     # Never shadow a vendor unit, alias or mask with a new /etc unit.
+     if [ "$file" != /etc/systemd/system/litehelm.service ] || [ -L "$file" ]; then return 1; fi
+     kind=unit;;
+    "$listen_conf")
+     [ ! -L "$file" ] || return 1
+     kind=managed;;
+    *) kind=dropin;;
+   esac
+   # Fail closed on old .include syntax or a continued ExecStart directive. An
+   # environment-only drop-in is harmless; a reset in an unmanaged file is not.
+   awk -v kind="$kind" -v standard="ExecStart=$standard_start" '
+    /^[[:space:]]*\.include[[:space:]]/ { bad=1 }
+    /^[[:space:]]*ExecStart[[:space:]]*(=|\\)/ {
+     n++
+     if (kind == "unit" && $0 == standard) next
+     if (kind == "managed" && n == 1 && $0 == "ExecStart=") next
+     if (kind == "managed" && n == 2 && $1 == "ExecStart=/usr/local/bin/litehelm" &&
+         $2 == "-token-file" && $3 == "/etc/litehelm/token" && $4 == "-allow-private-listen" &&
+         $5 == "-listen" && $6 ~ /^[][0-9a-fA-F:.]+$/ &&
+         (NF == 6 || (NF == 8 && $7 == "-allow-cidrs" && $8 ~ /^[0-9a-fA-F:.,\/]+$/))) next
+     bad=1
+    }
+    END { exit (bad || (kind == "unit" && n != 1) || (kind == "managed" && n != 2)) }
+   ' "$file" || return 1
+  done
+ done < "$tmp/unit-paths"
+}
+expected_start=$standard_start
+if [ "$LISTEN_MODE" != keep ] && ! check_listen_ownership; then
+ echo 'Cannot safely manage ExecStart: inspect systemctl cat litehelm.service and manually merge the listen flags into your custom unit or drop-in. No installation changes made.' >&2; exit 1
+fi
+had_listen=false
+if [ -f "$listen_conf" ]; then cp -p "$listen_conf" "$tmp/listen.conf"; had_listen=true; fi
+if [ "$LISTEN_MODE" = lan ] || { [ "$LISTEN_MODE" = keep ] && [ "$had_listen" = true ]; }; then
+ if ! grep -Eq '^[[:space:]]*-allow-private-listen([[:space:]]|$)' "$tmp/help"; then
+  echo 'LAN listening requires a binary that supports -allow-private-listen; install a newer release' >&2; exit 1
+ fi
+fi
+if [ "$LISTEN_MODE" = lan ]; then
+ # Validate before changing accounts, binary, token or unit. Use the daemon's exact CIDR policy.
+ set -- -allow-private-listen -listen "$LAN_ADDR"
+ if [ -n "$CIDRS" ]; then set -- "$@" -allow-cidrs "$CIDRS"; fi
+ "$tmp/$asset" -check-listen "$@" >/dev/null
+ {
+  printf '%s\n' '[Unit]' 'Wants=network-online.target' 'After=network-online.target' '[Service]' 'ExecStart='
+  # These arguments are literal, whitespace-free installer-validated values.
+  expected_start="/usr/local/bin/litehelm -token-file /etc/litehelm/token $*"
+  printf 'ExecStart=%s\n' "$expected_start"
+ } > "$tmp/new-listen.conf"
 fi
 # Script jobs run as a dedicated unprivileged account unless another one is chosen.
 exec_conf=/etc/systemd/system/litehelm.service.d/20-litehelm-exec.conf
@@ -250,25 +333,56 @@ if [ "$WEB" = off ]; then
 elif [ "$WEB" = on ]; then
  rm -f "$web_conf"
 fi
+restart_attempted=false
 rollback() {
- echo 'Startup failed; restoring previous binary and service state' >&2
- systemctl stop litehelm.service || true
+ echo 'Activation failed; restoring previous binary and service state' >&2
+ if [ "$restart_attempted" = true ]; then systemctl stop litehelm.service || true; fi
  if [ "$had_binary" = true ]; then install -m 755 "$tmp/previous" /usr/local/bin/litehelm.new; mv -f /usr/local/bin/litehelm.new /usr/local/bin/litehelm; else rm -f /usr/local/bin/litehelm; fi
  if [ "$had_unit" = false ]; then rm -f /etc/systemd/system/litehelm.service; fi
  if [ "$added_compat" = true ]; then rm -f "$compat"; fi
  if [ "$had_exec" = true ]; then cp -p "$tmp/exec.conf" "$exec_conf"; else rm -f "$exec_conf"; fi
  if [ "$had_web" = true ]; then cp -p "$tmp/web.conf" "$web_conf"; else rm -f "$web_conf"; fi
+ if [ "$LISTEN_MODE" != keep ]; then
+  if [ "$had_listen" = true ]; then cp -p "$tmp/listen.conf" "$listen_conf"; else rm -f "$listen_conf"; fi
+ fi
  systemctl daemon-reload || true
- if [ "$was_active" = true ]; then systemctl start litehelm.service || true; fi
+ if [ "$restart_attempted" = true ] && [ "$was_active" = true ]; then systemctl start litehelm.service || true; fi
  echo 'Token has been preserved. Inspect: journalctl -u litehelm -n 40 --no-pager' >&2
  exit 1
 }
+if [ "$LISTEN_MODE" = lan ]; then
+ install -m 644 "$tmp/new-listen.conf" "$listen_conf" || rollback
+elif [ "$LISTEN_MODE" = loopback ]; then
+ rm -f "$listen_conf" || rollback
+fi
 systemctl daemon-reload || rollback
+if [ "$LISTEN_MODE" != keep ]; then
+ # Compare the entire effective command, not substrings: extra or repeated flags
+ # can override a requested CIDR policy while leaving the listen address intact.
+ effective=$(systemctl --no-pager show -p ExecStart litehelm.service) || rollback
+ case "$effective" in
+  *'argv[]='*'argv[]='*) match=false;;
+  "ExecStart={ path=/usr/local/bin/litehelm ; argv[]=$expected_start ; ignore_errors=no ; "*) match=true;;
+  *) match=false;;
+ esac
+ if [ "$match" = false ]; then
+  echo 'Effective ExecStart does not match the requested listener; manually merge the listen flags. Service not restarted.' >&2
+  rollback
+ fi
+fi
+restart_attempted=true
 systemctl restart litehelm.service || rollback
 # Let immediate crashes appear before reporting success.
 sleep 2
 systemctl is-active --quiet litehelm.service || rollback
 systemctl enable litehelm.service
-printf '%s\n' 'LiteHelm is running at http://127.0.0.1:9091' 'Publish this local endpoint using your HTTPS reverse proxy; the same origin serves the app API and the web UI.' 'Read the token locally: sudo cat /etc/litehelm/token' 'Existing token, unit and user drop-ins were preserved; managed openat2 compatibility setting installed.'
+# Report the running invocation (including user unit overrides), not an installer default.
+invocation=$(systemctl show litehelm.service -p InvocationID --value 2>/dev/null) || invocation=
+actual_listen=
+if [ -n "$invocation" ]; then
+ actual_listen=$(journalctl --no-pager -o cat "_SYSTEMD_INVOCATION_ID=$invocation" | sed -n 's/^.*LiteHelm listening on \([^ ]*\) .*/\1/p' | tail -n 1)
+fi
+if [ -n "$actual_listen" ]; then printf 'LiteHelm is running at http://%s\n' "$actual_listen"; else echo 'LiteHelm is active; check the listening address with sudo ss -ltnp'; fi
+printf '%s\n' 'HTTP on the LAN carries the bearer token in cleartext. Use a trusted segment and an HTTPS reverse proxy or Cloudflare Tunnel.' 'Read the token locally: sudo cat /etc/litehelm/token' 'Existing token, unit and user drop-ins were preserved; managed openat2 compatibility setting installed.'
 if [ -e "$exec_conf" ]; then echo "Script execution: enabled as $exec_user (change with --exec-user, disable with --disable-exec)"; else echo 'Script execution: disabled (enable with --enable-exec)'; fi
 if [ -e "$web_conf" ]; then echo 'Web UI: disabled (enable with --enable-web)'; else echo 'Web UI: enabled at your HTTPS origin (disable with --disable-web)'; fi
