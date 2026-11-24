@@ -346,7 +346,11 @@ rollback() {
   if [ "$had_listen" = true ]; then cp -p "$tmp/listen.conf" "$listen_conf"; else rm -f "$listen_conf"; fi
  fi
  systemctl daemon-reload || true
- if [ "$restart_attempted" = true ] && [ "$was_active" = true ]; then systemctl start litehelm.service || true; fi
+ if [ "$restart_attempted" = true ] && [ "$was_active" = true ]; then
+  # A crashing replacement may have exhausted the start budget of the restored unit.
+  systemctl reset-failed litehelm.service 2>/dev/null || true
+  if ! systemctl start litehelm.service; then echo 'Restored files, but the previous service could not be started.' >&2; fi
+ fi
  echo 'Token has been preserved. Inspect: journalctl -u litehelm -n 40 --no-pager' >&2
  exit 1
 }
@@ -370,6 +374,8 @@ if [ "$LISTEN_MODE" != keep ]; then
   rollback
  fi
 fi
+# An explicit install/upgrade should not inherit the last invocation's start-limit counter.
+systemctl reset-failed litehelm.service 2>/dev/null || true
 restart_attempted=true
 systemctl restart litehelm.service || rollback
 # Let immediate crashes appear before reporting success.

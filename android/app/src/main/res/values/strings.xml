@@ -32,7 +32,6 @@
     <string name="unavailable_now">Unavailable</string>
     <string name="vault_unavailable">Encrypted credentials on this device are unavailable. Enter connection details again</string>
     <string name="host">Host</string>
-    <string name="host_choice">LiteHelm · %1$s ▾</string>
     <string name="switch_host_current">Switch host, current: %1$s</string>
     <string name="not_connected">Not connected</string>
     <string name="nav_overview">Overview</string>
@@ -61,7 +60,6 @@
     <string name="waiting_connection">Waiting to connect</string>
     <string name="tagline">Lightweight server manager</string>
     <string name="brand_tagline">LiteHelm · Lightweight server manager</string>
-    <string name="switch_host">Switch host</string>
     <string name="host_tools">Host tools</string>
     <string name="retry">Retry</string>
     <string name="check_connection">Check connection</string>
@@ -173,7 +171,7 @@
     <string name="hide">Hide</string>
     <string name="show_field">Show %1$s</string>
     <string name="hide_field">Hide %1$s</string>
-    <string name="manage_hosts">Manage and switch hosts</string>
+    <string name="manage_hosts">Manage hosts</string>
     <string name="hint_name">e.g. Production</string>
     <string name="hint_token">Server access token</string>
     <string name="host_name">Host name</string>
@@ -207,10 +205,12 @@
     <string name="services_not_loaded">Services for this host not loaded yet</string>
     <string name="only_current">Only the current host is contacted; other hosts are never queried automatically.</string>
     <string name="current_suffix">%1$s · current</string>
-    <string name="connect_host">Connect to this host</string>
+    <string name="connect_host">Switch</string>
     <string name="edit">Edit</string>
-    <string name="delete_host">Delete host</string>
+    <string name="delete_host">Delete</string>
     <string name="add_host">Add host</string>
+    <string name="current_badge">Current</string>
+    <string name="host_action_desc">%1$s: %2$s</string>
     <string name="new_host_hint">New host · saved after verification</string>
     <string name="edit_host_hint">Editing %1$s · replaced after verification</string>
     <string name="delete_title">Delete saved host?</string>

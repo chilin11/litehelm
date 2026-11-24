@@ -87,6 +87,7 @@ systemd-analyze verify /etc/systemd/system/litehelm.service
 sed -i 's/RestrictSUIDSGID=false/RestrictSUIDSGID=true/' /etc/systemd/system/litehelm.service
 rm -f /etc/systemd/system/litehelm.service.d/10-litehelm-openat2.conf
 systemctl daemon-reload
+systemctl reset-failed litehelm.service
 systemctl restart litehelm.service
 token_hash=$(sha256sum /etc/litehelm/token)
 binary_hash=$(sha256sum /usr/local/bin/litehelm)
@@ -115,6 +116,7 @@ Environment=LITEHELM_RUN_TIMERS=fixture-worker.timer
 Environment=LITEHELM_SCAN_ROOTS=/var/log
 CONF
 systemctl daemon-reload
+systemctl reset-failed litehelm.service
 systemctl restart litehelm.service
 systemctl start fixture-worker.timer
 python3 - <<'PY'
@@ -213,6 +215,7 @@ if mode=='litehelm':
  j=req('jobs',{'script':'exit 7'})['job']; assert wait(j['id'])['job']['exit_code']==7
  j=req('jobs',{'script':'while true; do echo tick; sleep 0.2; done'})['job']; time.sleep(1)
  req('services/litehelm-job-'+j['id']+'.service/action',{'action':'stop'},expect=403)
+ subprocess.run(['systemctl','reset-failed','litehelm.service'],check=True)
  subprocess.run(['systemctl','restart','litehelm.service'],check=True); time.sleep(2)
  assert req('jobs/'+j['id'])['job']['state']=='running'
  req('jobs/'+j['id']+'/cancel',{}); assert wait(j['id'])['job']['state']=='cancelled'
@@ -344,7 +347,14 @@ BAD
 # Removing the managed override and replacing the binary must roll back together.
 if sh "$base/install.sh" --local-dir "$tmp" --listen-loopback; then echo 'Accepted crashing binary'; exit 1; fi
 [ "$listen_hash" = "$(sha256sum "$listen_conf")" ]
-[ "$(http_code /)" = 200 ]
+[ "$binary_hash" = "$(sha256sum /usr/local/bin/litehelm)" ]
+systemctl is-active --quiet litehelm.service
+# Type=simple start returns before the restored HTTP listener is necessarily ready.
+for delay in 0 1 1 1; do
+ sleep "$delay"
+ if code=$(http_code / 2>/dev/null); then break; fi
+done
+[ "$code" = 200 ]
 sh "$base/install.sh" --local-dir "$base/dist" --listen-loopback
 [ ! -e "$listen_conf" ]
 [ "$unit_hash" = "$(sha256sum /etc/systemd/system/litehelm.service)" ]

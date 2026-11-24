@@ -29,7 +29,6 @@
     <string name="unavailable_now">暂不可用</string>
     <string name="vault_unavailable">本机加密凭据不可用，请重新填写连接信息</string>
     <string name="host">主机</string>
-    <string name="host_choice">LiteHelm · %1$s ▾</string>
     <string name="switch_host_current">切换主机，当前 %1$s</string>
     <string name="not_connected">未连接</string>
     <string name="nav_overview">概览</string>
@@ -58,7 +57,6 @@
     <string name="waiting_connection">等待连接</string>
     <string name="tagline">轻量服务器管家</string>
     <string name="brand_tagline">LiteHelm · 轻量服务器管家</string>
-    <string name="switch_host">切换主机</string>
     <string name="host_tools">主机工具</string>
     <string name="retry">重试</string>
     <string name="check_connection">检查连接</string>
@@ -170,7 +168,7 @@
     <string name="hide">隐藏</string>
     <string name="show_field">显示%1$s</string>
     <string name="hide_field">隐藏%1$s</string>
-    <string name="manage_hosts">管理与切换主机</string>
+    <string name="manage_hosts">管理主机</string>
     <string name="hint_name">例如：生产主机</string>
     <string name="hint_token">服务器访问令牌</string>
     <string name="host_name">主机名称</string>
@@ -204,10 +202,12 @@
     <string name="services_not_loaded">尚未加载当前主机服务</string>
     <string name="only_current">仅连接当前主机，不自动查询其他主机。</string>
     <string name="current_suffix">%1$s · 当前</string>
-    <string name="connect_host">连接此主机</string>
+    <string name="connect_host">切换</string>
     <string name="edit">编辑</string>
-    <string name="delete_host">删除主机</string>
+    <string name="delete_host">删除</string>
     <string name="add_host">添加主机</string>
+    <string name="current_badge">当前</string>
+    <string name="host_action_desc">%1$s：%2$s</string>
     <string name="new_host_hint">新增主机 · 验证成功后保存</string>
     <string name="edit_host_hint">编辑 %1$s · 验证成功后替换</string>
     <string name="delete_title">删除已保存主机？</string>

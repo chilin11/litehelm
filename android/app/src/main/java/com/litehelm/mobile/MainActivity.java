@@ -25,7 +25,9 @@ public final class MainActivity extends Activity {
     private ProfileBook book=new ProfileBook();
     private String editingId="";
     private EditText nameInput;
-    private TextView hostChoice;
+    private TextView hostChoice, formTitle, settingsTitle, settingsSubtitle;
+    private LinearLayout hostPicker, hostsArea, formPanel;
+    private Dialog hostMenu;
     private LinearLayout favoritesArea;
     private volatile int sheetGeneration;
     private LinearLayout root, chrome, nav, dashboard, settings, dashboardData, powerArea, processHeader, serviceHeader;
@@ -50,8 +52,13 @@ public final class MainActivity extends Activity {
     private int page=3, serviceFilter;
     private volatile int generation;
     private final int[] scrollY=new int[5];
-    private String processQuery="", serviceQuery="", systemError="", notice="";
+    private String processQuery="", serviceQuery="", systemError="", notice="", processLoadedQuery="";
     private Dialog sheet;
+    // A sheet read deferred until the single in-flight read ends, and the sheet generation owning the active read (-1: page read).
+    private Runnable idleTask;
+    private int idleSheet, sheetRead=-1;
+    /** Process search also narrows on the server, so a settled query (including a cleared one) reloads once. */
+    private final Runnable processSearchReload=()->{ if(foreground && page==1 && config!=null && sheet==null) restartRead(); };
     private State state;
     private final Runnable poll=()->{ if(foreground && page==0 && config!=null && sheet==null) loadCurrent(); };
     /** Foreground-only UI re-render when a shown monitor report ages out; never issues a request. */
@@ -72,7 +79,7 @@ public final class MainActivity extends Activity {
 
     private static final class State {
         String address="", token="", name="", editingId="", processQuery="", serviceQuery="", notice="";
-        boolean draft, cpu; int page=3, filter;
+        boolean draft, cpu, dirty; int page=3, filter;
         String jobName="", jobScript="", jobView=""; int jobTimeout=1800;
         volatile ApiClient.Config config;
         ProfileBook book;
@@ -102,13 +109,13 @@ public final class MainActivity extends Activity {
         editingId=state.draft?state.editingId:book.activeId;
         page=config==null?3:(state.draft?state.page:0);
         processCpu=state.cpu; serviceFilter=state.filter;
-        processQuery=state.processQuery; serviceQuery=state.serviceQuery; jobView=state.jobView;
+        processQuery=state.processQuery; serviceQuery=state.serviceQuery; jobView=state.jobView; dirty=state.dirty;
         buildShell();
         switchPage(page,false);
     }
     @Override public Object onRetainNonConfigurationInstance() {
         captureDraft(); state.config=config; state.book=book; state.page=page; state.cpu=processCpu; state.filter=serviceFilter;
-        state.processQuery=processQuery; state.serviceQuery=serviceQuery; state.jobView=jobView; state.owner=null;
+        state.processQuery=processQuery; state.serviceQuery=serviceQuery; state.jobView=jobView; state.dirty=dirty; state.owner=null;
         return state;
     }
     @Override protected void onResume() {
@@ -119,15 +126,15 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onPause() {
         foreground=false; generation++; stopPolls(); handler.removeCallbacks(monitorExpiry); resetRates();
-        if(sheet!=null)sheet.dismiss();
+        closeSheet(); closeHostMenu(); idleTask=null;
         systemFresh=false; processesFresh=false; servicesFresh=false;
         api.cancelRead(); super.onPause();
     }
     @Override protected void onDestroy() {
-        destroyed=true; handler.removeCallbacksAndMessages(null); if(sheet!=null)sheet.dismiss();
+        destroyed=true; handler.removeCallbacksAndMessages(null); closeSheet(); closeHostMenu();
         api.cancelRead(); if(state.owner==this)state.owner=null; super.onDestroy();
     }
-    @Override public void onBackPressed() { if(sheet!=null && sheet.isShowing())sheet.dismiss(); else if(page==4 && !jobView.isEmpty())showJobView(""); else if(page!=0 && config!=null)switchPage(0,true); else super.onBackPressed(); }
+    @Override public void onBackPressed() { if(sheet!=null)closeSheet(); else if(page==4 && !jobView.isEmpty())showJobView(""); else if(page!=0 && config!=null)switchPage(0,true); else super.onBackPressed(); }
 
     private int dp(float n) { return Math.round(n*getResources().getDisplayMetrics().density); }
     private boolean largeType() { return getResources().getConfiguration().fontScale>1.3f || getResources().getConfiguration().screenWidthDp<350; }
@@ -165,33 +172,45 @@ public final class MainActivity extends Activity {
         if(Build.VERSION.SDK_INT>=30)root.setOnApplyWindowInsetsListener((v,insets)->{ android.graphics.Insets sys=insets.getInsets(WindowInsets.Type.systemBars()|WindowInsets.Type.displayCutout()); android.graphics.Insets ime=insets.getInsets(WindowInsets.Type.ime()); root.setPadding(sys.left,sys.top,sys.right,Math.max(sys.bottom,ime.bottom)); return insets; });
         else root.setOnApplyWindowInsetsListener((v,i)->{root.setPadding(i.getSystemWindowInsetLeft(),i.getSystemWindowInsetTop(),i.getSystemWindowInsetRight(),i.getSystemWindowInsetBottom());return i;});
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE|View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN|View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
-        chrome=row(); chrome.setPadding(dp(24),dp(12),dp(24),dp(12));
+        chrome=row(); chrome.setPadding(dp(24),dp(8),dp(24),dp(8));
         Icon logo=new Icon(4,MINT);logo.setBackground(shape(0xFF17362F,8,false));chrome.addView(logo,new LinearLayout.LayoutParams(dp(32),dp(32)));
-        hostChoice=text(t(R.string.host_choice,t(R.string.host)),15,TEXT);hostChoice.setSingleLine(true);hostChoice.setEllipsize(TextUtils.TruncateAt.END);hostChoice.setMinHeight(dp(48));hostChoice.setGravity(Gravity.CENTER_VERTICAL);hostChoice.setOnClickListener(v->chooseHost());LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(0,-2,1);bp.leftMargin=dp(10);chrome.addView(hostChoice,bp);
+        // Spinner-like host picker: the caret sits outside the ellipsized name so long names never hide it.
+        hostPicker=row();hostPicker.setPadding(dp(12),0,dp(10),0);hostPicker.setBackground(ripple(SURFACE,10));hostPicker.setOnClickListener(v->openHostMenu());
+        hostChoice=text(t(R.string.host),15,TEXT);hostChoice.setSingleLine(true);hostChoice.setEllipsize(TextUtils.TruncateAt.END);hostChoice.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);weight(hostPicker,hostChoice);
+        TextView caret=text("\u25BE",14,SECONDARY);caret.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);LinearLayout.LayoutParams kp=new LinearLayout.LayoutParams(-2,-2);kp.leftMargin=dp(6);hostPicker.addView(caret,kp);
+        LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(0,dp(48),1);bp.leftMargin=dp(10);bp.rightMargin=dp(10);chrome.addView(hostPicker,bp);
         connection=text(t(R.string.not_connected),12,MUTED);chrome.addView(connection);root.addView(chrome,new LinearLayout.LayoutParams(-1,-2));
         View topLine=new View(this);topLine.setBackgroundColor(LINE);root.addView(topLine,new LinearLayout.LayoutParams(-1,dp(1)));
         FrameLayout center=new FrameLayout(this);content=new FrameLayout(this);FrameLayout.LayoutParams cp=new FrameLayout.LayoutParams(Math.min(dp(600),getResources().getDisplayMetrics().widthPixels),-1,Gravity.CENTER_HORIZONTAL);center.addView(content,cp);root.addView(center,new LinearLayout.LayoutParams(-1,0,1));
         View bottomLine=new View(this);bottomLine.setBackgroundColor(LINE);root.addView(bottomLine,new LinearLayout.LayoutParams(-1,dp(1)));
         nav=row();String[] titles={t(R.string.nav_overview),t(R.string.nav_processes),t(R.string.nav_services),t(R.string.nav_settings),t(R.string.nav_scripts)};
         // Page indexes stay stable (settings is 3); the bar shows scripts before settings.
-        for(int index:new int[]{0,1,2,4,3}) { final int i=index;LinearLayout item=column();item.setGravity(Gravity.CENTER);item.setPadding(0,dp(5),0,dp(5));item.setBackground(ripple(BG,0));navIcons[i]=new Icon(i==4?5:i,MUTED);item.addView(navIcons[i],new LinearLayout.LayoutParams(dp(44),dp(28)));navLabels[i]=text(titles[i],11,MUTED);navLabels[i].setGravity(Gravity.CENTER);navLabels[i].setMaxLines(1);navLabels[i].setAutoSizeTextTypeUniformWithConfiguration(7,11,1,android.util.TypedValue.COMPLEX_UNIT_SP);gap(item,4);item.addView(navLabels[i],new LinearLayout.LayoutParams(-1,navLabels[i].getLineHeight()));item.setOnClickListener(v->switchPage(index,true));item.setContentDescription(titles[i]);item.setMinimumHeight(dp(64));navItems[i]=item;nav.addView(item,new LinearLayout.LayoutParams(0,-2,1)); }
+        for(int index:new int[]{0,1,2,4,3}) { final int i=index;LinearLayout item=column();item.setGravity(Gravity.CENTER);item.setPadding(0,dp(5),0,dp(5));item.setBackground(ripple(BG,0));navIcons[i]=new Icon(i==4?5:i,MUTED);item.addView(navIcons[i],new LinearLayout.LayoutParams(dp(44),dp(28)));navLabels[i]=text(titles[i],11,MUTED);navLabels[i].setGravity(Gravity.CENTER);navLabels[i].setMaxLines(1);navLabels[i].setAutoSizeTextTypeUniformWithConfiguration(7,11,1,android.util.TypedValue.COMPLEX_UNIT_SP);gap(item,4);item.addView(navLabels[i],new LinearLayout.LayoutParams(-1,navLabels[i].getLineHeight()));item.setOnClickListener(v->{if(index==page&&config!=null)reselect();else switchPage(index,true);});item.setContentDescription(titles[i]);item.setMinimumHeight(dp(64));navItems[i]=item;nav.addView(item,new LinearLayout.LayoutParams(0,-2,1)); }
         root.addView(nav,new LinearLayout.LayoutParams(-1,-2));setContentView(root);root.requestApplyInsets();
         buildDashboard();buildProcesses();buildServices();buildSettings();buildScripts();
     }
     private void switchPage(int next,boolean loadNow) {
         if(next!=3 && config==null) { toast(t(R.string.connect_first));next=3; }
         if(pages[page] instanceof ScrollView)scrollY[page]=((ScrollView)pages[page]).getScrollY();
-        if(sheet!=null)sheet.dismiss();api.cancelRead();loadPending=false;
+        closeSheet();closeHostMenu();api.cancelRead();loadPending=false;idleTask=null;
         generation++;stopPolls();resetRates();page=next;
         for(int i=0;i<5;i++) {pages[i].setVisibility(i==page?View.VISIBLE:View.GONE);int color=i==page?MINT:MUTED;navIcons[i].color=color;navIcons[i].setBackground(shape(i==page?0xFF17362F:BG,10,false));navIcons[i].invalidate();navLabels[i].setTextColor(color);navItems[i].setSelected(i==page);}
         // Scripts and their output may contain secrets, like credentials on the settings page.
         if(page==3||page==4)getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
         if(pages[page] instanceof ScrollView) {final int position=scrollY[page];final ScrollView current=(ScrollView)pages[page];current.post(()->current.scrollTo(0,position));}
         ((InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(root.getWindowToken(),0);
-        if(page==3 && config!=null){LinearLayout title=(LinearLayout)settings.getChildAt(0);LinearLayout labels=(LinearLayout)title.getChildAt(0);((TextView)labels.getChildAt(0)).setText(t(R.string.nav_settings));((TextView)labels.getChildAt(2)).setText(t(R.string.settings_subtitle));}
+        if(page==3)updateSettingsHeading();
         if(page==0)updateDashboard(); if(page==3)updatePower(); if(page==4)resetJobDetail();
         if(loadNow && foreground && config!=null)loadCurrent();
     }
+    /** Tapping the active tab returns to its top (or the job list) and refreshes, instead of re-entering the page. */
+    private void reselect(){
+        if(page==4&&!jobView.isEmpty()){showJobView("");return;}
+        if(page==1)processList.setSelection(0);else if(page==2)serviceList.setSelection(0);else if(pages[page] instanceof ScrollView)((ScrollView)pages[page]).smoothScrollTo(0,0);
+        if(foreground&&config!=null)loadCurrent();
+    }
+    /** Drops any in-flight page read and starts the current page again with the latest query/sort. */
+    private void restartRead(){generation++;stopPolls();api.cancelRead();loadPending=false;idleTask=null;loadCurrent();}
     private void attachPage(int index,View v) {pages[index]=v;content.addView(v,new FrameLayout.LayoutParams(-1,-1));v.setVisibility(View.GONE);}
     private void status(boolean ok) {connected=ok;connection.setText(ok?t(R.string.status_connected):t(R.string.status_failed));connection.setTextColor(ok?MINT:RED);updateControls();}
     private void updateControls() {
@@ -201,21 +220,27 @@ public final class MainActivity extends Activity {
     }
     private interface Result {void accept(JSONObject data) throws Exception;}
     private void read(ApiClient.Config credentials,String path,boolean saving,Result success,java.util.function.Consumer<String> failure) {
-        if(busy || ApiClient.MUTATING.get()) {loadPending=true;return;}busy=true; final int gen=generation; final int requestPage=page;updateControls();connection.setText(t(R.string.status_connecting));connection.setTextColor(WARN);
-        final int requestSheet=sheetGeneration;final boolean inSheet=sheet!=null;final ApiClient.Config identity=config;
+        if(busy || ApiClient.MUTATING.get()) {loadPending=true;return;}busy=true; final int gen=generation; final int requestPage=page;updateControls();
+        // Background refreshes keep the known state instead of flashing "Connecting" on every poll.
+        if(!connected && !saving){connection.setText(t(R.string.status_connecting));connection.setTextColor(WARN);}
+        final int requestSheet=sheetGeneration;final boolean inSheet=sheet!=null;final ApiClient.Config identity=config;sheetRead=inSheet?requestSheet:-1;
         ApiClient.IO.execute(()->{JSONObject value=null;String error=null;try {if(!RequestPolicy.current(foreground,generation,gen,config,identity,inSheet,sheetGeneration,requestSheet))throw new Exception(t(R.string.request_cancelled));value=api.request(credentials,path,null,()->RequestPolicy.current(foreground,generation,gen,config,identity,inSheet,sheetGeneration,requestSheet));validatePayload(path,value);}catch(Exception e){error=e.getMessage()==null?t(R.string.request_failed):ApiClient.redact(e.getMessage(),credentials);}final JSONObject result=value;final String problem=error;
-            handler.post(()->{busy=false;validating=false;if(destroyed)return;
+            handler.post(()->{busy=false;validating=false;sheetRead=-1;if(destroyed)return;
                 boolean current=requestPage==page && RequestPolicy.current(foreground,generation,gen,config,identity,inSheet,sheetGeneration,requestSheet);
                 if(saving)for(EditText field:new EditText[]{nameInput,addressInput,tokenInput})enabled(field,true);
                 // Commit the small encrypted preference and active config in one main-loop turn;
                 // rotation/navigation cannot interleave a persisted connection with the old owner.
-                if(current) {if(problem==null) {try {status(true);success.accept(result);}catch(Exception e){status(false);failure.accept(saving?t(R.string.err_save_connection):t(R.string.err_data_format));}} else {status(false);failure.accept(problem);}}
+                // A rejected candidate host says nothing about the active one, so validation never touches the connection badge.
+                if(current) {if(problem==null) {try {if(!saving)status(true);success.accept(result);}catch(Exception e){if(!saving)status(false);failure.accept(saving?t(R.string.err_save_connection):t(R.string.err_data_format));}} else {if(!saving)status(false);failure.accept(problem);}}
                 else if(saving)showMessage(settingsError,t(R.string.validation_cancelled),false);
                 if(!current && !saving && foreground){connection.setText(connected?t(R.string.status_connected):t(R.string.status_disconnected));connection.setTextColor(connected?MINT:MUTED);}
-                updateControls();if(loadPending && foreground){loadPending=false;loadCurrent();}else schedulePoll();
+                updateControls();if(runIdle())return;if(loadPending && foreground){loadPending=false;loadCurrent();}else schedulePoll();
             });
         });
     }
+    /** Sheet reads wait for the single in-flight read instead of failing with "busy"; reads still never overlap. */
+    private void whenIdle(Runnable task){if(ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}if(!busy){task.run();return;}idleTask=task;idleSheet=sheetGeneration;}
+    private boolean runIdle(){Runnable task=idleTask;idleTask=null;if(task==null||busy||sheet==null||idleSheet!=sheetGeneration||!foreground)return false;task.run();return true;}
     private static void validatePayload(String path,JSONObject j) throws Exception {
         if(path.equals("/api/v1/system")) {if(j.optString("hostname").isEmpty() || j.optJSONObject("capabilities")==null || !j.has("timestamp"))throw new Exception(t(R.string.err_host_info));}
         else if(path.startsWith("/api/v1/processes?"))j.getJSONArray("processes");
@@ -223,7 +248,7 @@ public final class MainActivity extends Activity {
         else if(path.endsWith("/logs"))j.getString("logs");
         else if(path.startsWith("/api/v1/jobs"))ToolData.validate(path,j);
     }
-    private void stopPolls() {handler.removeCallbacks(poll);handler.removeCallbacks(jobTick);}
+    private void stopPolls() {handler.removeCallbacks(poll);handler.removeCallbacks(jobTick);handler.removeCallbacks(processSearchReload);}
     private void schedulePoll() {
         stopPolls();boolean mutating=ApiClient.MUTATING.get(),open=sheet!=null;
         if(RequestPolicy.poll(foreground,page,config!=null,busy,mutating,open))handler.postDelayed(poll,OVERVIEW_POLL_MS);
@@ -246,8 +271,7 @@ public final class MainActivity extends Activity {
         dashboard=pageColumn();dashRefresh=compact(t(R.string.refresh),()->loadCurrent());
         LinearLayout top=largeType()?column():row();LinearLayout names=column();names.addView(label(t(R.string.current_host)));gap(names,6);hostname=text(t(R.string.waiting_connection),24,TEXT);names.addView(hostname);gap(names,6);os=text(t(R.string.tagline),12,SECONDARY);names.addView(os);if(largeType())top.addView(names,new LinearLayout.LayoutParams(-1,-2));else weight(top,names);LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-2,-2);if(largeType())rp.topMargin=dp(12);top.addView(dashRefresh,rp);dashboard.addView(top);
         dashMessage=message(dashboard);
-        gap(dashboard,16);dashboard.addView(compact(t(R.string.switch_host),()->chooseHost()),new LinearLayout.LayoutParams(-1,-2));
-        gap(dashboard,8);dashboard.addView(compact(t(R.string.host_tools),()->toolMenu()),new LinearLayout.LayoutParams(-1,-2));
+        gap(dashboard,16);dashboard.addView(compact(t(R.string.host_tools),()->toolMenu()),new LinearLayout.LayoutParams(-1,-2));
         favoritesArea=column();dashboard.addView(favoritesArea);renderFavorites();
         LinearLayout help=row();help.addView(compact(t(R.string.retry),()->loadCurrent()),new LinearLayout.LayoutParams(0,-2,1));Button check=compact(t(R.string.check_connection),()->switchPage(3,true));LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(0,-2,1);hp.leftMargin=dp(8);help.addView(check,hp);help.setTag("errorHelp");dashboard.addView(help);help.setVisibility(View.GONE);
         dashboardData=column();gap(dashboardData,24);LinearLayout up=row();weight(up,label(t(R.string.uptime)));uptime=text("—",14,TEXT);up.addView(uptime);dashboardData.addView(up);gap(dashboardData,24);
@@ -314,15 +338,16 @@ public final class MainActivity extends Activity {
     private void buildProcesses() {
         LinearLayout outer=column(), header=pageColumn();processHeader=header;header.setPadding(0,dp(20),0,dp(8));processRefresh=compact(t(R.string.refresh),()->{processList.setSelection(0);loadCurrent();});heading(header,t(R.string.nav_processes),t(R.string.top_memory),processRefresh);((LinearLayout)((LinearLayout)header.getChildAt(0)).getChildAt(0)).getChildAt(2).setTag("processSubtitle");
         LinearLayout sort=row();Button mem=compact(t(R.string.memory),()->setSort(false)), cp=compact(t(R.string.cpu_average),()->setSort(true));sort.addView(mem,new LinearLayout.LayoutParams(0,-2,1));LinearLayout.LayoutParams sp=new LinearLayout.LayoutParams(0,-2,1);sp.leftMargin=dp(8);sort.addView(cp,sp);mem.setTag("sortMem");cp.setTag("sortCpu");header.addView(sort);gap(header,12);
-        processSearch=search(t(R.string.search_processes),processQuery,q->{processQuery=q;filterProcesses();});header.addView(searchRow(processSearch));gap(header,12);addText(header,t(R.string.cpu_note),12,MUTED);processMessage=message(header);
+        processSearch=search(t(R.string.search_processes),processQuery,q->{processQuery=q;filterProcesses();handler.removeCallbacks(processSearchReload);if(page==1&&!q.trim().equals(processLoadedQuery))handler.postDelayed(processSearchReload,600);});header.addView(searchRow(processSearch));gap(header,12);addText(header,t(R.string.cpu_note),12,MUTED);processMessage=message(header);
         processList=new ListView(this);processList.setDivider(new android.graphics.drawable.ColorDrawable(LINE));processList.setDividerHeight(dp(1));processList.setCacheColorHint(BG);processList.setClipToPadding(false);processList.setPadding(dp(24),0,dp(24),dp(20));processList.addHeaderView(header,null,false);processAdapter=new DataAdapter(false);processList.setAdapter(processAdapter);processList.setOnItemClickListener((p,v,pos,id)->{int index=pos-processList.getHeaderViewsCount();if(index>=0&&index<processAdapter.items.size())processSheet(processAdapter.items.get(index));});outer.addView(processList,new LinearLayout.LayoutParams(-1,0,1));attachPage(1,outer);paintSort();
     }
     private EditText search(String hint,String value,java.util.function.Consumer<String> change){EditText input=input(hint,false);input.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);input.setText(value);watch(input,()->change.accept(input.getText().toString()));return input;}
     private View searchRow(EditText input){LinearLayout r=row();weight(r,input);Button clear=compact(t(R.string.clear),()->input.setText(""));clear.setContentDescription(t(R.string.clear_search));LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-2,-2);p.leftMargin=dp(8);r.addView(clear,p);return r;}
-    private void setSort(boolean cpu){if(busy)return;processCpu=cpu;processesFresh=false;processes.clear();filterProcesses();paintSort();if(foreground&&page==1)loadCurrent();}
+    // A sort change replaces any in-flight list read instead of being silently ignored while busy.
+    private void setSort(boolean cpu){if(cpu==processCpu)return;processCpu=cpu;processesFresh=false;processes.clear();filterProcesses();paintSort();showMessage(processMessage,t(R.string.loading_processes),false);if(foreground&&page==1&&config!=null)restartRead();}
     private void paintSort(){View h=processHeader;if(h==null)return;Button a=h.findViewWithTag("sortMem"),b=h.findViewWithTag("sortCpu");a.setTextColor(processCpu?SECONDARY:MINT);b.setTextColor(processCpu?MINT:SECONDARY);TextView subtitle=h.findViewWithTag("processSubtitle");if(subtitle!=null)subtitle.setText(processCpu?t(R.string.top_cpu):t(R.string.top_memory));}
     private String serviceDesc(JSONObject s){String d=s.optString("description","");if(!d.isEmpty())return d;String st=s.optString("unit_file_state","");return st.isEmpty()?"—":t(R.string.unit_installed,st);}
-    private void loadProcesses(){showMessage(processMessage,t(R.string.loading_processes),false);String qParam=processQuery.trim().isEmpty()?"":"&q="+encodeSegment(processQuery.trim());read(config,"/api/v1/processes?limit=100"+(processCpu?"&sort=cpu":"")+qParam,false,j->{processes.clear();JSONArray list=j.getJSONArray("processes");for(int i=0;i<Math.min(100,list.length());i++)processes.add(list.getJSONObject(i));processesFresh=true;filterProcesses();},e->{processesFresh=false;showMessage(processMessage,(processes.isEmpty()?e:t(R.string.error_stale,e)),true);});}
+    private void loadProcesses(){showMessage(processMessage,t(R.string.loading_processes),false);final String query=processQuery.trim();String qParam=query.isEmpty()?"":"&q="+encodeSegment(query);read(config,"/api/v1/processes?limit=100"+(processCpu?"&sort=cpu":"")+qParam,false,j->{processLoadedQuery=query;processes.clear();JSONArray list=j.getJSONArray("processes");for(int i=0;i<Math.min(100,list.length());i++)processes.add(list.getJSONObject(i));processesFresh=true;filterProcesses();},e->{processesFresh=false;showMessage(processMessage,(processes.isEmpty()?e:t(R.string.error_stale,e)),true);});}
     private void filterProcesses(){if(processAdapter==null)return;ArrayList<JSONObject> result=new ArrayList<>();String query=processQuery.toLowerCase(Locale.ROOT).trim();for(JSONObject p:processes)if((p.optString("name")+" "+p.optString("pid")+" "+p.optString("user")).toLowerCase(Locale.ROOT).contains(query))result.add(p);processAdapter.set(result);if(processesFresh)showMessage(processMessage,result.isEmpty()?(query.isEmpty()?t(R.string.no_processes):t(R.string.no_matching_processes)):"",false);}
     private String processBlock(JSONObject p){if(!processesFresh||!systemFresh||!connected)return t(R.string.stale_list);if(!capability("process_signal"))return t(R.string.no_process_control);if(p.optInt("pid",0)<=1)return t(R.string.process_protected);if(p.isNull("start_time")||p.optString("start_time").isEmpty())return t(R.string.missing_start);return "";}
     private void processSheet(JSONObject p){
@@ -352,7 +377,7 @@ public final class MainActivity extends Activity {
         String[] acts={"start","restart","stop"},labels={t(R.string.action_start),t(R.string.action_restart),t(R.string.action_stop)};
         for(int i=0;i<3;i++){final String action=acts[i],label=labels[i];Button b=button(label,false,action.equals("stop"),()->{if(!capability("service_control")||!servicesFresh){toast(t(R.string.service_stale));return;}confirmService(s,action,label);});enabled(b,allowed&&(i==0?(active.equals("inactive")||active.equals("failed")):active.equals("active")));box.addView(b,new LinearLayout.LayoutParams(-1,-2));gap(box,8);}
         if(!allowed)addText(box,t(R.string.control_unavailable),12,WARN);else if(!active.equals("active")&&!active.equals("inactive")&&!active.equals("failed"))addText(box,t(R.string.state_changing),12,WARN);
-        gap(box,12);Button logs=compact(t(R.string.view_logs),()->{if(busy){toast(t(R.string.busy));return;}if(sheet!=null)sheet.dismiss();showLogs(s.optString("name"));});box.addView(logs,new LinearLayout.LayoutParams(-1,-2));showSheet(box);
+        gap(box,12);Button logs=compact(t(R.string.view_logs),()->{closeSheet();showLogs(s.optString("name"));});box.addView(logs,new LinearLayout.LayoutParams(-1,-2));showSheet(box);
     }
     private String servicePath(String name){return "/api/v1/services/"+encodeSegment(name);}
     private static String encodeSegment(String name){try{return URLEncoder.encode(name,"UTF-8").replace("+","%20");}catch(java.io.UnsupportedEncodingException impossible){throw new AssertionError(impossible);}}
@@ -364,7 +389,7 @@ public final class MainActivity extends Activity {
         final String[] original={""},visible={""};final boolean[] loaded={false};
         EditText query=search(t(R.string.search_logs), "",q->{});
         Runnable filter=()->{String q=query.getText().toString();LogFilter.Result r=LogFilter.filter(original[0],q);visible[0]=r.visible;count.setText(t(R.string.log_matches,r.matches,r.lines));logs.setText(visible[0].isEmpty()?t(R.string.no_matching_logs):visible[0]);};watch(query,filter);
-        Runnable fetch=()->{if(busy||ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}showMessage(info,t(R.string.loading),false);read(config,servicePath(name)+"/logs",false,j->{original[0]=j.getString("logs");loaded[0]=true;filter.run();showMessage(info,j.optBoolean("truncated")?t(R.string.logs_truncated):"",false);},e->showMessage(info,e,true));};
+        Runnable fetch=()->{showMessage(info,t(R.string.loading),false);whenIdle(()->read(config,servicePath(name)+"/logs",false,j->{original[0]=j.getString("logs");loaded[0]=true;filter.run();showMessage(info,j.optBoolean("truncated")?t(R.string.logs_truncated):"",false);},e->showMessage(info,e,true)));};
         box.addView(compact(t(R.string.refresh_logs),fetch),new LinearLayout.LayoutParams(-1,-2));gap(box,8);box.addView(searchRow(query));gap(box,8);box.addView(count);gap(box,12);
         addText(box,t(R.string.clipboard_warning),12,WARN);
         box.addView(compact(t(R.string.copy_visible),()->{if(loaded[0])copyLogs(name,visible[0]);}),new LinearLayout.LayoutParams(-1,-2));
@@ -390,14 +415,18 @@ public final class MainActivity extends Activity {
     private void field(LinearLayout box,String title,EditText e){box.addView(label(title));gap(box,8);box.addView(e,new LinearLayout.LayoutParams(-1,-2));gap(box,20);}
     private void secretField(LinearLayout box,String title,EditText e){box.addView(label(title));gap(box,8);LinearLayout r=row();weight(r,e);Button toggle=compact(t(R.string.show),()->{boolean hidden=e.getTransformationMethod()!=null;e.setTransformationMethod(hidden?null:PasswordTransformationMethod.getInstance());e.setSelection(e.length());Button b=(Button)((LinearLayout)e.getParent()).getChildAt(1);b.setText(hidden?t(R.string.hide):t(R.string.show));b.setContentDescription(t(hidden?R.string.hide_field:R.string.show_field,title));});toggle.setContentDescription(t(R.string.show_field,title));LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-2,-2);p.leftMargin=dp(8);r.addView(toggle,p);box.addView(r);gap(box,20);}
     private void buildSettings(){
-        settings=pageColumn();heading(settings,config==null?t(R.string.connect_server):t(R.string.nav_settings),config==null?t(R.string.brand_tagline):t(R.string.settings_subtitle),null);LinearLayout form=panel();
-        settings.addView(compact(t(R.string.manage_hosts),()->chooseHost()),new LinearLayout.LayoutParams(-1,-2));gap(settings,12);settings.addView(compact(t(R.string.language_button,languageName(languageTag())),()->chooseLanguage()),new LinearLayout.LayoutParams(-1,-2));gap(settings,12);
+        settings=pageColumn();heading(settings,t(R.string.nav_settings),t(R.string.settings_subtitle),null);
+        LinearLayout labels=(LinearLayout)((LinearLayout)settings.getChildAt(0)).getChildAt(0);settingsTitle=(TextView)labels.getChildAt(0);settingsSubtitle=(TextView)labels.getChildAt(2);
+        // Saved hosts first (compact cards), then the add/edit form, host control and the rarely used language choice.
+        hostsArea=column();settings.addView(hostsArea,new LinearLayout.LayoutParams(-1,-2));
+        LinearLayout form=panel();formPanel=form;formTitle=text("",13,SECONDARY);formTitle.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);form.addView(formTitle);gap(form,16);
         nameInput=input(t(R.string.hint_name),false);addressInput=input("https://node.example.com",false);tokenInput=input(t(R.string.hint_token),true);
         nameInput.setText(state.draft?state.name:book.active()==null?"":book.active().name);
         addressInput.setText(state.draft?state.address:config==null?"":config.origin);tokenInput.setText(state.draft?state.token:config==null?"":config.token);
         field(form,t(R.string.host_name),nameInput);field(form,t(R.string.server_address),addressInput);secretField(form,t(R.string.access_token),tokenInput);
-        settingsError=message(form);saveButton=button(t(R.string.save_connect),true,false,()->saveConnection());form.addView(saveButton,new LinearLayout.LayoutParams(-1,-2));settings.addView(form);gap(settings,28);powerArea=column();settings.addView(powerArea);gap(settings,28);TextView footer=text(t(R.string.brand_tagline),11,MUTED);footer.setGravity(Gravity.CENTER);settings.addView(footer);
-        for(EditText e:new EditText[]{nameInput,addressInput,tokenInput})watch(e,()->{dirty=true;captureDraft();if(!busy)showMessage(settingsError,"",false);});attachPage(3,scroll(settings));updatePower();updateHostLabel();
+        settingsError=message(form);saveButton=button(t(R.string.save_connect),true,false,()->saveConnection());form.addView(saveButton,new LinearLayout.LayoutParams(-1,-2));settings.addView(form);gap(settings,28);powerArea=column();settings.addView(powerArea);gap(settings,28);
+        settings.addView(compact(t(R.string.language_button,languageName(languageTag())),()->chooseLanguage()),new LinearLayout.LayoutParams(-1,-2));gap(settings,20);TextView footer=text(t(R.string.brand_tagline),11,MUTED);footer.setGravity(Gravity.CENTER);settings.addView(footer);
+        for(EditText e:new EditText[]{nameInput,addressInput,tokenInput})watch(e,()->{dirty=true;captureDraft();if(!busy)showMessage(settingsError,"",false);});attachPage(3,scroll(settings));updatePower();updateHostLabel();updateFormTitle();
     }
     private void captureDraft(){if(addressInput==null)return;state.draft=true;state.address=addressInput.getText().toString();state.token=tokenInput.getText().toString();state.name=nameInput.getText().toString();state.editingId=editingId;}
     private void saveConnection(){
@@ -414,53 +443,126 @@ public final class MainActivity extends Activity {
             ProfileBook.Profile profile=new ProfileBook.Profile(profileId,profileName,candidate);
             if(previous!=null){profile.favorites.addAll(previous.favorites);next.profiles.set(next.profiles.indexOf(previous),profile);}else next.profiles.add(profile);
             next.activeId=profileId;vault.save(next);book=next;state.book=book;editingId=profileId;config=candidate;state.config=config;
-            clearHostData();system=j;systemFresh=true;connected=true;systemError="";lastSystemSuccess=System.currentTimeMillis();dirty=false;
-            addressInput.setText(candidate.origin);updateHostLabel();renderFavorites();updateDashboard();updatePower();toast(t(R.string.connected_toast));switchPage(0,false);loadCurrent();
+            clearHostData();system=j;systemFresh=true;systemError="";lastSystemSuccess=System.currentTimeMillis();
+            addressInput.setText(candidate.origin);dirty=false;updateFormTitle();status(true);updateHostLabel();renderFavorites();updateDashboard();updatePower();toast(t(R.string.connected_toast));switchPage(0,false);loadCurrent();
         },e->{for(EditText field:new EditText[]{nameInput,addressInput,tokenInput})enabled(field,true);showMessage(settingsError,e,true);});
     }
     private void updatePower(){if(powerArea==null)return;powerArea.removeAllViews();addText(powerArea,t(R.string.host_control),15,TEXT);gap(powerArea,12);if(config==null){addText(powerArea,t(R.string.host_control_hint),12,MUTED);return;}addText(powerArea,system==null?t(R.string.host_info_missing):system.optString("hostname"),14,SECONDARY);gap(powerArea,16);JSONObject caps=system==null?null:system.optJSONObject("capabilities");if(caps==null||!caps.optBoolean("power",false)){addText(powerArea,t(R.string.power_disabled),14,SECONDARY);gap(powerArea,6);addText(powerArea,t(R.string.power_enable_hint),12,MUTED);return;}Button reboot=button(t(R.string.reboot_server),false,false,()->powerConfirm("reboot")),off=button(t(R.string.shutdown_server),false,true,()->powerConfirm("poweroff"));powerArea.addView(reboot,new LinearLayout.LayoutParams(-1,-2));gap(powerArea,8);powerArea.addView(off,new LinearLayout.LayoutParams(-1,-2));boolean can=capability("power")&&!busy&&!ApiClient.MUTATING.get();enabled(reboot,can);enabled(off,can);if(!can){gap(powerArea,8);addText(powerArea,t(R.string.refresh_before_action),12,WARN);}}
     private void powerConfirm(String action){if(!capability("power")){toast(t(R.string.verify_permission_first));return;}String host=system.optString("hostname");boolean off=action.equals("poweroff");LinearLayout box=sheetBox(off?t(R.string.shutdown_title):t(R.string.reboot_title));addText(box,t(R.string.host_line,hostLabel()),14,MINT);gap(box,12);addText(box,host,18,TEXT);gap(box,12);addText(box,off?t(R.string.shutdown_warning):t(R.string.reboot_warning),14,SECONDARY);gap(box,20);EditText confirm=input(t(R.string.hint_type_hostname),false);confirm.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);box.addView(confirm,new LinearLayout.LayoutParams(-1,-2));gap(box,20);Button send=button(off?t(R.string.confirm_shutdown):t(R.string.confirm_reboot),true,true,()->{if(!capability("power")||!host.equals(confirm.getText().toString()))return;mutate("/api/v1/power",json("action",action,"confirm",host),off?t(R.string.shutdown_scheduled):t(R.string.reboot_scheduled),()->{systemFresh=false;processesFresh=false;servicesFresh=false;systemError=t(R.string.power_scheduled);connected=false;connection.setText(t(R.string.status_waiting_host));connection.setTextColor(WARN);updatePower();updateDashboard();},true);});enabled(send,false);watch(confirm,()->enabled(send,host.equals(confirm.getText().toString())&&!busy&&!ApiClient.MUTATING.get()));box.addView(send,new LinearLayout.LayoutParams(-1,-2));showSheet(box);}
 
     private String hostLabel(){ProfileBook.Profile p=book.active();return p==null?t(R.string.not_configured):p.name+" · "+p.config.origin;}
-    private void updateHostLabel(){if(hostChoice!=null){hostChoice.setText(t(R.string.host_choice,book.active()==null?t(R.string.host):book.active().name));hostChoice.setContentDescription(t(R.string.switch_host_current,hostLabel()));}}
+    private static String shortOrigin(String origin){return origin.startsWith("https://")?origin.substring(8):origin;}
+    private void updateHostLabel(){
+        if(hostChoice!=null){ProfileBook.Profile a=book.active();hostChoice.setText(a==null?"+ "+t(R.string.add_host):a.name);hostPicker.setContentDescription(a==null?t(R.string.add_host):t(R.string.switch_host_current,hostLabel()));}
+        renderHosts();updateSettingsHeading();
+    }
+    private void updateSettingsHeading(){if(settingsTitle==null)return;settingsTitle.setText(config==null?t(R.string.connect_server):t(R.string.nav_settings));settingsSubtitle.setText(config==null?t(R.string.brand_tagline):t(R.string.settings_subtitle));}
     private boolean canChangeHost(){if(ApiClient.MUTATING.get()){toast(t(R.string.write_pending));return false;}return true;}
+    /** A pending save verification is dropped (draft kept) before the host list or the edited profile changes under it. */
+    private void cancelValidation(){if(validating){generation++;api.cancelRead();loadPending=false;}}
     private void clearHostData(){
-        generation++;stopPolls();api.cancelRead();if(sheet!=null)sheet.dismiss();loadPending=false;
+        generation++;stopPolls();api.cancelRead();closeSheet();closeHostMenu();loadPending=false;idleTask=null;
         system=null;lastSystemSuccess=0;systemFresh=false;processesFresh=false;servicesFresh=false;connected=false;supported=true;systemError="";resetRates();
         processes.clear();services.clear();processAdapter.set(new ArrayList<>());serviceAdapter.set(new ArrayList<>());
         showMessage(processMessage,t(R.string.processes_not_loaded),false);showMessage(serviceMessage,t(R.string.services_not_loaded),false);
-        processQuery="";serviceQuery="";processSearch.setText("");serviceSearch.setText("");serviceFilter=0;paintFilters();Arrays.fill(scrollY,0);
+        processQuery="";serviceQuery="";processLoadedQuery="";processSearch.setText("");serviceSearch.setText("");serviceFilter=0;paintFilters();Arrays.fill(scrollY,0);
         jobsData=null;jobView="";jobUser="";resetJobDetail();renderScripts();showMessage(scriptMessage,"",false);
         connection.setText(t(R.string.status_disconnected));connection.setTextColor(MUTED);updateDashboard();updatePower();
     }
-    private void chooseHost(){
+    private void closeHostMenu(){Dialog d=hostMenu;hostMenu=null;if(d!=null)d.dismiss();}
+    /**
+     * Top-bar dropdown anchored under the picker: one tap switches host, tapping the current host only closes it
+     * (an in-flight read keeps running). Editing and deleting live in Settings so they are never hit by accident.
+     * A Dialog (not PopupWindow) so the list can carry FLAG_SECURE like every other host sheet.
+     */
+    private void openHostMenu(){
+        if(hostMenu!=null){closeHostMenu();return;}
+        if(book.profiles.isEmpty()){editProfile(null);return;}
         if(!canChangeHost())return;
-        generation++;api.cancelRead();loadPending=false;
-        LinearLayout box=sheetBox(t(R.string.host));addText(box,t(R.string.only_current),12,SECONDARY);gap(box,16);
+        LinearLayout list=column();list.setPadding(0,dp(6),0,0);
         for(ProfileBook.Profile p:book.profiles){
-            addText(box,(p.id.equals(book.activeId)?t(R.string.current_suffix,p.name):p.name),16,p.id.equals(book.activeId)?MINT:TEXT);gap(box,6);addText(box,p.config.origin,12,SECONDARY);gap(box,8);
-            box.addView(compact(t(R.string.connect_host),()->activateProfile(p.id)),new LinearLayout.LayoutParams(-1,-2));gap(box,8);
-            box.addView(compact(t(R.string.edit),()->editProfile(p)),new LinearLayout.LayoutParams(-1,-2));gap(box,8);
-            box.addView(button(t(R.string.delete_host),false,true,()->confirmDeleteProfile(p)),new LinearLayout.LayoutParams(-1,-2));divider(box);
+            final boolean current=p.id.equals(book.activeId);final String id=p.id,address=shortOrigin(p.config.origin);
+            LinearLayout r=row();r.setPadding(dp(16),dp(10),dp(14),dp(10));r.setMinimumHeight(dp(56));r.setBackground(ripple(RAISED,0));
+            LinearLayout names=column();TextView n=text(p.name,15,current?MINT:TEXT);n.setSingleLine(true);n.setEllipsize(TextUtils.TruncateAt.END);names.addView(n);gap(names,4);
+            TextView a=text(address,12,SECONDARY);a.setSingleLine(true);a.setEllipsize(TextUtils.TruncateAt.MIDDLE);names.addView(a);weight(r,names);
+            TextView mark=text(current?"\u2713":"",16,MINT);mark.setGravity(Gravity.CENTER);LinearLayout.LayoutParams mp=new LinearLayout.LayoutParams(dp(24),-2);mp.leftMargin=dp(12);r.addView(mark,mp);
+            r.setSelected(current);r.setContentDescription(t(R.string.two_lines,current?t(R.string.current_suffix,p.name):p.name,address));
+            r.setOnClickListener(v->{closeHostMenu();if(!current)activateProfile(id);});list.addView(r,new LinearLayout.LayoutParams(-1,-2));
         }
-        box.addView(button(t(R.string.add_host),true,false,()->editProfile(null)),new LinearLayout.LayoutParams(-1,-2));showSheet(box);
+        View line=new View(this);line.setBackgroundColor(LINE);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,dp(1));lp.topMargin=dp(6);list.addView(line,lp);
+        TextView add=menuAction("+ "+t(R.string.add_host),MINT,()->{closeHostMenu();editProfile(null);}),manage=menuAction(t(R.string.manage_hosts),SECONDARY,()->{closeHostMenu();manageHosts();});
+        LinearLayout actions=largeType()?column():row();
+        if(largeType()){actions.addView(add,new LinearLayout.LayoutParams(-1,-2));actions.addView(manage,new LinearLayout.LayoutParams(-1,-2));}else{weight(actions,add);weight(actions,manage);}
+        list.addView(actions,new LinearLayout.LayoutParams(-1,-2));
+        // Position relative to this activity's window; LEFT (not START) because x is measured from the left edge.
+        View decor=getWindow().getDecorView();int[] at=new int[2],base=new int[2];hostPicker.getLocationOnScreen(at);decor.getLocationOnScreen(base);
+        int winW=decor.getWidth(),winH=decor.getHeight(),margin=dp(12);
+        int width=Math.min(Math.min(Math.max(hostPicker.getWidth(),dp(280)),dp(420)),winW-2*margin);
+        int x=Math.max(margin,Math.min(at[0]-base[0],winW-width-margin)),y=at[1]-base[1]+hostPicker.getHeight()+dp(4);
+        int maxHeight=Math.max(dp(160),winH-y-root.getPaddingBottom()-margin);
+        list.measure(View.MeasureSpec.makeMeasureSpec(width,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(0,View.MeasureSpec.UNSPECIFIED));
+        Dialog d=new Dialog(this);d.requestWindowFeature(Window.FEATURE_NO_TITLE);d.setContentView(scroll(list));d.setCanceledOnTouchOutside(true);
+        Window w=d.getWindow();
+        if(w!=null){
+            w.setBackgroundDrawable(shape(RAISED,12,true));w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            w.addFlags(WindowManager.LayoutParams.FLAG_SECURE|WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN|WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
+            WindowManager.LayoutParams p=w.getAttributes();p.gravity=Gravity.TOP|Gravity.LEFT;p.x=x;p.y=y;p.width=width;p.height=Math.min(list.getMeasuredHeight(),maxHeight);
+            if(Build.VERSION.SDK_INT>=28)p.layoutInDisplayCutoutMode=getWindow().getAttributes().layoutInDisplayCutoutMode;
+            if(Build.VERSION.SDK_INT>=30)p.setFitInsetsTypes(0);
+            w.setAttributes(p);
+        }
+        d.setOnDismissListener(dialog->{if(hostMenu==d)hostMenu=null;});hostMenu=d;d.show();
+    }
+    private TextView menuAction(String label,int color,Runnable action){TextView v=text(label,14,color);v.setGravity(Gravity.CENTER_VERTICAL);v.setMinHeight(dp(48));v.setPadding(dp(16),dp(8),dp(16),dp(8));v.setBackground(ripple(RAISED,0));v.setFocusable(true);v.setOnClickListener(view->action.run());return v;}
+    private void manageHosts(){if(page!=3)switchPage(3,true);final ScrollView s=(ScrollView)pages[3];s.post(()->s.smoothScrollTo(0,hostsArea.getTop()));}
+    private Button chip(String label,int color,String target,Runnable action){Button b=compact(label,action);b.setTextSize(13);b.setTextColor(color);b.setMinWidth(0);b.setMinimumWidth(0);b.setMinHeight(dp(48));b.setMinimumHeight(dp(48));b.setPadding(dp(8),dp(6),dp(8),dp(6));b.setContentDescription(target==null?label:t(R.string.host_action_desc,label,target));return b;}
+    /** Compact saved-host cards: switch, edit and delete are separate small actions; deleting still asks for confirmation. */
+    private void renderHosts(){
+        if(hostsArea==null)return;hostsArea.removeAllViews();hostsArea.setVisibility(book.profiles.isEmpty()?View.GONE:View.VISIBLE);if(book.profiles.isEmpty())return;
+        LinearLayout head=row();weight(head,text(t(R.string.manage_hosts),15,TEXT));LinearLayout.LayoutParams ap=new LinearLayout.LayoutParams(-2,-2);ap.leftMargin=dp(8);head.addView(chip("+ "+t(R.string.add_host),MINT,null,()->editProfile(null)),ap);hostsArea.addView(head,new LinearLayout.LayoutParams(-1,-2));
+        gap(hostsArea,4);addText(hostsArea,t(R.string.only_current),12,MUTED);gap(hostsArea,12);
+        for(ProfileBook.Profile p:book.profiles){
+            final boolean current=p.id.equals(book.activeId);
+            LinearLayout card=column();card.setPadding(dp(16),dp(14),dp(16),dp(12));GradientDrawable bg=shape(SURFACE,12,false);bg.setStroke(dp(1),current?MINT:LINE);card.setBackground(bg);
+            LinearLayout top=row();TextView name=text(p.name,15,current?MINT:TEXT);name.setSingleLine(true);name.setEllipsize(TextUtils.TruncateAt.END);weight(top,name);
+            if(current){LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(-2,-2);cp.leftMargin=dp(8);top.addView(text(t(R.string.current_badge),12,MINT),cp);}
+            card.addView(top);gap(card,6);TextView address=text(p.config.origin,12,SECONDARY);address.setSingleLine(true);address.setEllipsize(TextUtils.TruncateAt.MIDDLE);card.addView(address);gap(card,10);
+            Button edit=chip(t(R.string.edit),TEXT,p.name,()->editProfile(p)),delete=chip(t(R.string.delete_host),RED,p.name,()->confirmDeleteProfile(p));
+            Button[] buttons=current?new Button[]{edit,delete}:new Button[]{chip(t(R.string.connect_host),MINT,p.name,()->activateProfile(p.id)),edit,delete};
+            LinearLayout actions=row();for(int i=0;i<buttons.length;i++){LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(0,-2,1);if(i>0)bp.leftMargin=dp(8);actions.addView(buttons[i],bp);}
+            card.addView(actions,new LinearLayout.LayoutParams(-1,-2));hostsArea.addView(card,new LinearLayout.LayoutParams(-1,-2));gap(hostsArea,8);
+        }
+        gap(hostsArea,20);
     }
     private void editProfile(ProfileBook.Profile profile){
-        if(!canChangeHost())return;if(sheet!=null)sheet.dismiss();switchPage(3,false);
-        editingId=profile==null?"":profile.id;nameInput.setText(profile==null?"":profile.name);addressInput.setText(profile==null?"":profile.config.origin);tokenInput.setText(profile==null?"":profile.config.token);captureDraft();
-        showMessage(settingsError,profile==null?t(R.string.new_host_hint):t(R.string.edit_host_hint,profile.name),false);((ScrollView)pages[3]).smoothScrollTo(0,0);
+        if(!canChangeHost())return;cancelValidation();closeSheet();if(page!=3)switchPage(3,false);fillForm(profile);
+        final ScrollView s=(ScrollView)pages[3];s.post(()->s.smoothScrollTo(0,formPanel.getTop()));
     }
+    /** Loads a profile (or an empty new-host form); the form is clean until the user types. */
+    private void fillForm(ProfileBook.Profile profile){
+        editingId=profile==null?"":profile.id;nameInput.setText(profile==null?"":profile.name);addressInput.setText(profile==null?"":profile.config.origin);tokenInput.setText(profile==null?"":profile.config.token);
+        dirty=false;captureDraft();updateFormTitle();if(!busy)showMessage(settingsError,"",false);
+    }
+    private void updateFormTitle(){if(formTitle==null)return;ProfileBook.Profile p=book.find(editingId);formTitle.setText(p==null?t(R.string.new_host_hint):t(R.string.edit_host_hint,p.name));}
     private void confirmDeleteProfile(ProfileBook.Profile profile){
         if(!canChangeHost())return;LinearLayout box=sheetBox(t(R.string.delete_title));addText(box,profile.name+"\n"+profile.config.origin,16,TEXT);gap(box,16);addText(box,t(R.string.delete_warning),14,SECONDARY);gap(box,24);
         box.addView(button(t(R.string.confirm_delete),true,true,()->{if(!canChangeHost())return;try{ProfileBook next=book.copy();ProfileBook.Profile removed=next.find(profile.id);if(removed==null)return;boolean active=next.activeId.equals(profile.id);next.profiles.remove(removed);if(active)next.activeId=next.profiles.isEmpty()?"":next.profiles.get(0).id;vault.save(next);book=next;state.book=book;
-            if(active){config=book.active()==null?null:book.active().config;state.config=config;clearHostData();}else if(sheet!=null)sheet.dismiss();
-            updateHostLabel();renderFavorites();if(active||editingId.equals(profile.id))editProfile(book.active());if(active&&config!=null)loadCurrent();
+            // A verification still running for the deleted host must not re-create it when it succeeds.
+            cancelValidation();closeSheet();
+            if(active){config=book.active()==null?null:book.active().config;state.config=config;clearHostData();}
+            if(editingId.equals(profile.id)||active&&!dirty)fillForm(book.active());else updateFormTitle();
+            updateHostLabel();renderFavorites();
+            if(config==null)switchPage(3,false);else if(active)loadCurrent();
         }catch(Exception e){toast(t(R.string.err_delete));}}),new LinearLayout.LayoutParams(-1,-2));showSheet(box);
     }
     private void activateProfile(String id){
-        if(!canChangeHost())return;if(id.equals(book.activeId)){if(sheet!=null)sheet.dismiss();return;}
+        if(!canChangeHost())return;if(id.equals(book.activeId))return;
         try{ProfileBook next=book.copy();if(next.find(id)==null)return;next.activeId=id;vault.save(next);book=next;state.book=book;config=book.active().config;state.config=config;clearHostData();
-            editingId=id;nameInput.setText(book.active().name);addressInput.setText(config.origin);tokenInput.setText(config.token);captureDraft();updateHostLabel();renderFavorites();switchPage(0,true);
+            // An untouched form follows the active host; a typed draft is kept and stays labelled with its own host.
+            if(!dirty)fillForm(book.active());else updateFormTitle();
+            updateHostLabel();renderFavorites();
+            // Stay on processes/services/scripts and load them for the new host; Settings returns to the overview.
+            switchPage(page==3?0:page,true);
         }catch(Exception e){toast(t(R.string.err_save_host));}
     }
     private boolean isFavorite(String name){return book.active()!=null&&book.active().favorites.contains(name);}
@@ -476,17 +578,18 @@ public final class MainActivity extends Activity {
         for(String name:profile.favorites){favoritesArea.addView(compact(name+"  ›",()->openFavorite(name)),new LinearLayout.LayoutParams(-1,-2));gap(favoritesArea,6);}
     }
     private void openFavorite(String name){
-        if(busy||ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}
+        if(ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}
         LinearLayout box=sheetBox(name);TextView info=message(box);showMessage(info,t(R.string.loading_service_state),false);showSheet(box);servicesFresh=false;
-        read(config,"/api/v1/system",false,j->{system=j;systemFresh=true;lastSystemSuccess=System.currentTimeMillis();systemError="";
+        whenIdle(()->read(config,"/api/v1/system",false,j->{system=j;systemFresh=true;lastSystemSuccess=System.currentTimeMillis();systemError="";
             read(config,"/api/v1/services",false,data->{supported=data.getBoolean("supported");services.clear();JSONArray list=data.getJSONArray("services");JSONObject target=null;for(int i=0;i<list.length();i++){JSONObject service=list.getJSONObject(i);services.add(service);if(name.equals(service.optString("name")))target=service;}servicesFresh=true;filterServices();
                 if(target==null)showMessage(info,supported?t(R.string.service_not_found):t(R.string.no_systemd),false);else serviceSheet(target);
             },e->{servicesFresh=false;showMessage(info,e,true);});
-        },e->{systemFresh=false;showMessage(info,e,true);});
+        },e->{systemFresh=false;showMessage(info,e,true);}));
     }
 
     private void toolMenu(){
-        if(config==null){toast(t(R.string.connect_host_first));return;}if(busy||ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}
+        // The menu itself sends nothing, so a background refresh never blocks opening it.
+        if(config==null){toast(t(R.string.connect_host_first));return;}
         LinearLayout box=sheetBox(t(R.string.host_tools));addText(box,hostLabel()+"\n"+t(R.string.tools_note),12,SECONDARY);gap(box,20);
         box.addView(compact(t(R.string.listening_ports),()->openTool("ports")),new LinearLayout.LayoutParams(-1,-2));gap(box,8);
         box.addView(compact(t(R.string.systemd_timers),()->openTool("timers")),new LinearLayout.LayoutParams(-1,-2));gap(box,8);
@@ -494,18 +597,18 @@ public final class MainActivity extends Activity {
     }
     private void toolRead(String path,JSONObject body,Result success,java.util.function.Consumer<String> failure){
         if(busy||ApiClient.MUTATING.get()||config==null||!foreground||sheet==null){toast(t(R.string.busy));return;}
-        busy=true;stopPolls();updateControls();final int gen=generation,sg=sheetGeneration;final ApiClient.Config identity=config;
+        busy=true;stopPolls();updateControls();final int gen=generation,sg=sheetGeneration;final ApiClient.Config identity=config;sheetRead=sg;
         ApiClient.IO.execute(()->{JSONObject data=null;String error=null;try{if(!RequestPolicy.current(foreground,generation,gen,config,identity,true,sheetGeneration,sg))throw new Exception(t(R.string.request_cancelled));data=api.request(identity,path,body,()->RequestPolicy.current(foreground,generation,gen,config,identity,true,sheetGeneration,sg));ToolData.validate(path,data);}catch(Exception e){error=e.getMessage()==null?t(R.string.tool_read_failed):ApiClient.redact(e.getMessage(),identity);}final JSONObject result=data;final String problem=error;
-            handler.post(()->{busy=false;if(destroyed)return;if(sheet!=null&&RequestPolicy.current(foreground,generation,gen,config,identity,true,sheetGeneration,sg)){if(problem==null)try{status(true);success.accept(result);}catch(Exception e){failure.accept(t(R.string.err_tool_format));}else{status(false);failure.accept(problem);}}updateControls();if(loadPending&&foreground){loadPending=false;loadCurrent();}else schedulePoll();});
+            handler.post(()->{busy=false;sheetRead=-1;if(destroyed)return;if(sheet!=null&&RequestPolicy.current(foreground,generation,gen,config,identity,true,sheetGeneration,sg)){if(problem==null)try{status(true);success.accept(result);}catch(Exception e){failure.accept(t(R.string.err_tool_format));}else{status(false);failure.accept(problem);}}updateControls();if(runIdle())return;if(loadPending&&foreground){loadPending=false;loadCurrent();}else schedulePoll();});
         });
     }
     private void openTool(String kind){
-        if(busy||ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}
+        if(ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}
         String title=kind.equals("ports")?t(R.string.listening_ports):kind.equals("timers")?t(R.string.systemd_timers):t(R.string.disks_scan_title);
         LinearLayout box=sheetBox(title);addText(box,t(R.string.host_line,hostLabel())+"\n"+t(R.string.no_auto_refresh),12,SECONDARY);gap(box,12);TextView info=message(box);LinearLayout rows=column();final JSONObject[] cached={null};
         EditText query=search(kind.equals("ports")?t(R.string.search_ports):t(R.string.search_name_path),"",q->{});
         Runnable render=()->{rows.removeAllViews();if(cached[0]==null)return;renderTool(kind,cached[0],query.getText().toString(),rows);};watch(query,render);
-        Runnable fetch=()->{showMessage(info,t(R.string.reading),false);toolRead("/api/v1/"+kind,null,j->{cached[0]=j;render.run();showMessage(info,j.optBoolean("truncated")?t(R.string.tool_truncated):"",false);},e->{cached[0]=null;rows.removeAllViews();showMessage(info,e,true);});};
+        Runnable fetch=()->{showMessage(info,t(R.string.reading),false);whenIdle(()->toolRead("/api/v1/"+kind,null,j->{cached[0]=j;render.run();showMessage(info,j.optBoolean("truncated")?t(R.string.tool_truncated):"",false);},e->{cached[0]=null;rows.removeAllViews();showMessage(info,e,true);}));};
         box.addView(compact(t(R.string.refresh),fetch),new LinearLayout.LayoutParams(-1,-2));gap(box,8);box.addView(searchRow(query));gap(box,16);box.addView(rows);showSheet(box);expandSheet();fetch.run();
     }
     private void renderTool(String kind,JSONObject data,String query,LinearLayout rows){
@@ -533,21 +636,21 @@ public final class MainActivity extends Activity {
         }
     }
     private void confirmTimer(JSONObject timer){
-        if(busy||ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}if(!timer.optBoolean("can_run"))return;
+        if(ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}if(!timer.optBoolean("can_run"))return;
         LinearLayout box=sheetBox(t(R.string.run_title));addText(box,t(R.string.host_line,hostLabel()),14,MINT);gap(box,16);addText(box,t(R.string.timer_unit,timer.optString("name"),timer.optString("unit")),16,TEXT);gap(box,16);addText(box,t(R.string.run_warning),14,SECONDARY);gap(box,24);
         box.addView(button(t(R.string.confirm_run),true,false,()->{String name=timer.optString("name");String path="/api/v1/timers/"+encodeSegment(name)+"/run";mutate(path,json("confirm",name),t(R.string.run_accepted),()->openTool("timers"),false);}),new LinearLayout.LayoutParams(-1,-2));showSheet(box);
     }
     private void confirmScan(String path){
-        if(busy||ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}LinearLayout box=sheetBox(t(R.string.scan_title));addText(box,t(R.string.host_line,hostLabel()),14,MINT);gap(box,16);addText(box,path,18,TEXT);gap(box,16);
+        if(ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}LinearLayout box=sheetBox(t(R.string.scan_title));addText(box,t(R.string.host_line,hostLabel()),14,MINT);gap(box,16);addText(box,path,18,TEXT);gap(box,16);
         addText(box,t(R.string.scan_warning),14,SECONDARY);gap(box,24);
         box.addView(button(t(R.string.confirm_scan),true,false,()->runScan(path)),new LinearLayout.LayoutParams(-1,-2));showSheet(box);
     }
     private void runScan(String path){
-        if(busy||ApiClient.MUTATING.get())return;LinearLayout box=sheetBox(t(R.string.scan_header,path));addText(box,t(R.string.host_line,hostLabel()),12,SECONDARY);gap(box,12);TextView info=message(box);showMessage(info,t(R.string.scanning),false);LinearLayout result=column();box.addView(result);showSheet(box);expandSheet();
-        toolRead("/api/v1/disk-scan",json("path",path),j->{showMessage(info,j.getBoolean("partial")?t(R.string.scan_partial,scanReasons(j.getString("reason"))):t(R.string.scan_complete),j.getBoolean("partial"));
+        if(ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}LinearLayout box=sheetBox(t(R.string.scan_header,path));addText(box,t(R.string.host_line,hostLabel()),12,SECONDARY);gap(box,12);TextView info=message(box);showMessage(info,t(R.string.scanning),false);LinearLayout result=column();box.addView(result);showSheet(box);expandSheet();
+        whenIdle(()->toolRead("/api/v1/disk-scan",json("path",path),j->{showMessage(info,j.getBoolean("partial")?t(R.string.scan_partial,scanReasons(j.getString("reason"))):t(R.string.scan_complete),j.getBoolean("partial"));
             addText(result,j.getString("path"),16,TEXT);gap(result,12);addText(result,t(R.string.scan_summary,bytes(number(j,"bytes")),files(j.optLong("files")),j.optLong("elapsed_ms")),14,SECONDARY);divider(result);
             JSONArray entries=j.getJSONArray("entries");ArrayList<JSONObject> sorted=new ArrayList<>();for(int i=0;i<entries.length();i++)sorted.add(entries.getJSONObject(i));sorted.sort((a,b)->Long.compare(b.optLong("bytes"),a.optLong("bytes")));addText(result,t(R.string.scan_entries),12,MUTED);gap(result,12);for(int i=0;i<Math.min(20,sorted.size());i++){JSONObject entry=sorted.get(i);addText(result,entry.optString("name")+"\n"+bytes(number(entry,"bytes"))+" · "+files(entry.optLong("files")),14,TEXT);divider(result);}
-        },e->showMessage(info,t(R.string.scan_failed,e),true));
+        },e->showMessage(info,t(R.string.scan_failed,e),true)));
     }
 
     // Scripts page: the server decides whether execution is enabled; drafts live in the retained State.
@@ -681,18 +784,22 @@ public final class MainActivity extends Activity {
     private static String stamp(long seconds){return seconds<=0?"—":new SimpleDateFormat("MM-dd HH:mm:ss",Locale.CHINA).format(new Date(seconds*1000));}
 
     private void expandSheet(){if(sheet!=null&&sheet.getWindow()!=null)sheet.getWindow().setLayout(Math.min(getResources().getDisplayMetrics().widthPixels,dp(600)),(int)(getResources().getDisplayMetrics().heightPixels*.85));}
-    private LinearLayout sheetBox(String title){LinearLayout box=column();box.setPadding(dp(24),dp(12),dp(24),dp(24));View handle=new View(this);handle.setBackground(shape(MUTED,2,false));LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(dp(32),dp(4));hp.gravity=Gravity.CENTER_HORIZONTAL;hp.bottomMargin=dp(12);box.addView(handle,hp);LinearLayout top=row();TextView name=text(title,18,TEXT);name.setTextIsSelectable(true);weight(top,name);Button close=compact(t(R.string.close),()->{if(sheet!=null)sheet.dismiss();});close.setContentDescription(t(R.string.close_sheet));LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(-2,-2);cp.leftMargin=dp(8);top.addView(close,cp);box.addView(top);gap(box,20);return box;}
+    private LinearLayout sheetBox(String title){LinearLayout box=column();box.setPadding(dp(24),dp(12),dp(24),dp(24));View handle=new View(this);handle.setBackground(shape(MUTED,2,false));LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(dp(32),dp(4));hp.gravity=Gravity.CENTER_HORIZONTAL;hp.bottomMargin=dp(12);box.addView(handle,hp);LinearLayout top=row();TextView name=text(title,18,TEXT);name.setTextIsSelectable(true);weight(top,name);Button close=compact(t(R.string.close),()->closeSheet());close.setContentDescription(t(R.string.close_sheet));LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(-2,-2);cp.leftMargin=dp(8);top.addView(close,cp);box.addView(top);gap(box,20);return box;}
     private void showSheet(LinearLayout box){
-        if(sheet!=null)sheet.dismiss();stopPolls();resetRates();sheetGeneration++;
+        closeSheet();closeHostMenu();stopPolls();resetRates();sheetGeneration++;
         Dialog d=new Dialog(this);d.setContentView(scroll(box));Window w=d.getWindow();
         if(w!=null){w.setBackgroundDrawable(shape(SURFACE,16,false));w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND|WindowManager.LayoutParams.FLAG_SECURE);WindowManager.LayoutParams p=w.getAttributes();p.dimAmount=.55f;p.gravity=Gravity.BOTTOM;p.width=Math.min(getResources().getDisplayMetrics().widthPixels,dp(600));p.height=-2;w.setAttributes(p);w.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);}
-        d.setOnDismissListener(dialog->{if(sheet==d){sheet=null;sheetGeneration++;loadPending=false;api.cancelRead();schedulePoll();}});sheet=d;d.show();
+        d.setOnDismissListener(dialog->{if(sheet==d){releaseSheet();schedulePoll();}});sheet=d;d.show();
         int max=(int)(getResources().getDisplayMetrics().heightPixels*.85);box.measure(View.MeasureSpec.makeMeasureSpec(Math.min(getResources().getDisplayMetrics().widthPixels,dp(600)),View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(0,View.MeasureSpec.UNSPECIFIED));if(w!=null)w.setLayout(Math.min(getResources().getDisplayMetrics().widthPixels,dp(600)),Math.min(box.getMeasuredHeight(),max));
     }
+    /** Clears sheet state synchronously: Dialog delivers onDismiss later, which used to block an immediate follow-up load. */
+    private void closeSheet(){Dialog d=sheet;if(d==null)return;releaseSheet();d.dismiss();}
+    /** Cancels only the closing sheet's own read; a page refresh that is still running is kept rather than turned into a false error. */
+    private void releaseSheet(){if(busy&&sheetRead==sheetGeneration)api.cancelRead();sheet=null;sheetGeneration++;idleTask=null;loadPending=false;}
     private void mutate(String path,JSONObject body,String success,Runnable after,boolean power){mutate(path,body,success,j->after.run(),power);}
     private void mutate(String path,JSONObject body,String success,Result after,boolean power){
         if(busy || config==null || !foreground || !ApiClient.MUTATING.compareAndSet(false,true)){toast(t(R.string.busy_existing));return;}
-        busy=true;stopPolls();final ApiClient.Config credentials=config;final State targetState=state;updateControls();if(sheet!=null)sheet.dismiss();toast(t(R.string.submitting));
+        busy=true;stopPolls();final ApiClient.Config credentials=config;final State targetState=state;updateControls();closeSheet();toast(t(R.string.submitting));
         final int gen=generation;
         ApiClient.IO.execute(()->{String error=null;JSONObject response=null;try{if(!RequestPolicy.current(foreground,generation,gen,config,credentials,false,0,0))throw new Exception(t(R.string.op_cancelled));response=api.request(credentials,path,body,()->RequestPolicy.current(foreground,generation,gen,config,credentials,false,0,0));}catch(Exception e){error=e.getMessage()==null?t(R.string.op_unconfirmed):ApiClient.redact(e.getMessage(),credentials);}final String problem=error;final JSONObject result=response;
             runOnUiThread(()->{ApiClient.MUTATING.set(false);busy=false;MainActivity owner=targetState.owner;if(owner==null||owner.destroyed||!owner.foreground){targetState.notice=problem==null?success:problem;return;}
@@ -732,7 +839,7 @@ public final class MainActivity extends Activity {
     // Recreation keeps drafts and saved hosts through the retained State object.
     private void setLanguage(String tag){
         if(busy||ApiClient.MUTATING.get()){toast(t(R.string.busy));return;}
-        if(sheet!=null)sheet.dismiss();if(tag.equals(languageTag()))return;
+        closeSheet();if(tag.equals(languageTag()))return;
         if(Build.VERSION.SDK_INT>=33){getSystemService(LocaleManager.class).setApplicationLocales(tag.isEmpty()?LocaleList.getEmptyLocaleList():LocaleList.forLanguageTags(tag));return;}
         getSharedPreferences("ui",MODE_PRIVATE).edit().putString("language",tag).commit();recreate();
     }

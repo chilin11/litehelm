@@ -29,7 +29,6 @@
     <string name="unavailable_now">暫不可用</string>
     <string name="vault_unavailable">本機加密憑證無法使用，請重新填寫連線資訊</string>
     <string name="host">主機</string>
-    <string name="host_choice">LiteHelm · %1$s ▾</string>
     <string name="switch_host_current">切換主機，目前 %1$s</string>
     <string name="not_connected">未連線</string>
     <string name="nav_overview">概覽</string>
@@ -58,7 +57,6 @@
     <string name="waiting_connection">等待連線</string>
     <string name="tagline">輕量伺服器管家</string>
     <string name="brand_tagline">LiteHelm · 輕量伺服器管家</string>
-    <string name="switch_host">切換主機</string>
     <string name="host_tools">主機工具</string>
     <string name="retry">重試</string>
     <string name="check_connection">檢查連線</string>
@@ -170,7 +168,7 @@
     <string name="hide">隱藏</string>
     <string name="show_field">顯示%1$s</string>
     <string name="hide_field">隱藏%1$s</string>
-    <string name="manage_hosts">管理與切換主機</string>
+    <string name="manage_hosts">管理主機</string>
     <string name="hint_name">例如：正式主機</string>
     <string name="hint_token">伺服器存取權杖</string>
     <string name="host_name">主機名稱</string>
@@ -204,10 +202,12 @@
     <string name="services_not_loaded">尚未載入目前主機服務</string>
     <string name="only_current">僅連線目前主機，不會自動查詢其他主機。</string>
     <string name="current_suffix">%1$s · 目前</string>
-    <string name="connect_host">連線此主機</string>
+    <string name="connect_host">切換</string>
     <string name="edit">編輯</string>
-    <string name="delete_host">刪除主機</string>
+    <string name="delete_host">刪除</string>
     <string name="add_host">新增主機</string>
+    <string name="current_badge">目前</string>
+    <string name="host_action_desc">%1$s：%2$s</string>
     <string name="new_host_hint">新增主機 · 驗證成功後儲存</string>
     <string name="edit_host_hint">編輯 %1$s · 驗證成功後取代</string>
     <string name="delete_title">刪除已儲存的主機？</string>
